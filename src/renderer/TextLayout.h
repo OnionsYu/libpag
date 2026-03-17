@@ -28,6 +28,28 @@
 
 namespace pagx {
 
+class Text;
+class TextBox;
+
+/**
+ * Line-level text information for SVG export, containing the UTF-8 text and font metrics
+ * computed from real font shaping (not estimated).
+ */
+struct SVGLineInfo {
+  std::string text;      // UTF-8 text content of this line
+  float width = 0;       // Line width based on real font metrics
+  float ascent = 0;      // Maximum ascent (positive value)
+  float descent = 0;     // Maximum descent
+  float lineHeight = 0;  // Effective line height
+};
+
+/**
+ * Result of layoutForSVG(), containing line-level text information for SVG export.
+ */
+struct SVGTextLayoutResult {
+  std::vector<SVGLineInfo> lines;
+};
+
 /**
  * Holds font location info and creates the Typeface on demand. Once created, the Typeface is
  * cached for subsequent access.
@@ -87,6 +109,15 @@ class TextLayout {
    * Performs text layout for all Text nodes in the document.
    */
   TextLayoutResult layout(PAGXDocument* document);
+
+  /**
+   * Performs text layout for SVG export, returning line-level text information with real font
+   * metrics. Unlike layout(), this does not produce TextBlob (glyph-level data) but instead
+   * returns the UTF-8 text and metrics for each line, which can be directly used in SVG
+   * `<text>` elements. This only handles horizontal text with a TextBox (multi-line layout).
+   */
+  SVGTextLayoutResult layoutForSVG(const std::vector<Text*>& textElements,
+                                   const TextBox* textBox);
 
  private:
   friend class TextLayoutContext;

@@ -2233,11 +2233,71 @@ class TextLayoutContext {
   ShapedTextMap result = {};
   std::vector<Text*> textOrder = {};
   std::unordered_map<const Font*, std::shared_ptr<tgfx::Typeface>> fontCache = {};
+
+ public:
+  SVGTextLayoutResult runForSVG(const std::vector<Text*>& textElements, const TextBox* textBox) {
+    // Shape each Text element and concatenate all glyphs.
+    std::vector<GlyphInfo> allGlyphs = {};
+    size_t estimatedGlyphCount = 0;
+    for (auto* text : textElements) {
+      estimatedGlyphCount += text->text.size();
+    }
+    allGlyphs.reserve(estimatedGlyphCount);
+    float totalWidth = 0;
+    for (auto* text : textElements) {
+      ShapedInfo info = {};
+      info.text = text;
+      if (!text->text.empty()) {
+        shapeText(text, info);
+      }
+      for (auto& g : info.allGlyphs) {
+        if (g.unichar != '\n') {
+          g.xPosition += totalWidth;
+        }
+      }
+      allGlyphs.insert(allGlyphs.end(), info.allGlyphs.begin(), info.allGlyphs.end());
+      totalWidth += info.totalWidth;
+    }
+    if (allGlyphs.empty()) {
+      return {};
+    }
+
+    // Use layoutLines() for line breaking with real font metrics.
+    auto lines = layoutLines(allGlyphs, textBox);
+
+    // Convert LineInfo to SVGLineInfo: rebuild UTF-8 text from unichar sequence.
+    SVGTextLayoutResult svgResult = {};
+    svgResult.lines.reserve(lines.size());
+    for (auto& line : lines) {
+      SVGLineInfo svgLine = {};
+      svgLine.width = line.width;
+      svgLine.ascent = line.maxAscent;
+      svgLine.descent = line.maxDescent;
+      svgLine.lineHeight = line.maxLineHeight;
+      // Reconstruct UTF-8 text from the unichar of each glyph.
+      std::string lineText;
+      lineText.reserve(line.glyphs.size() * 3);  // rough estimate for UTF-8
+      for (auto& g : line.glyphs) {
+        if (g.unichar > 0 && g.unichar != '\n') {
+          lineText += tgfx::UTF::ToUTF8(g.unichar);
+        }
+      }
+      svgLine.text = std::move(lineText);
+      svgResult.lines.push_back(std::move(svgLine));
+    }
+    return svgResult;
+  }
 };
 
 TextLayoutResult TextLayout::layout(PAGXDocument* document) {
   TextLayoutContext context(this, document);
   return context.run();
+}
+
+SVGTextLayoutResult TextLayout::layoutForSVG(const std::vector<Text*>& textElements,
+                                             const TextBox* textBox) {
+  TextLayoutContext context(this, nullptr);
+  return context.runForSVG(textElements, textBox);
 }
 
 }  // namespace pagx

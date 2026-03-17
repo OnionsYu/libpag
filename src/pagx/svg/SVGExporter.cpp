@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 #include "base/utils/MathUtil.h"
+#include "cli/SystemFonts.h"
 #include "pagx/PAGXDocument.h"
 #include "pagx/nodes/BlendFilter.h"
 #include "pagx/nodes/BlurFilter.h"
@@ -34,7 +35,6 @@
 #include "pagx/nodes/Group.h"
 #include "pagx/nodes/Image.h"
 #include "pagx/nodes/ImagePattern.h"
-#include "pagx/types/Rect.h"
 #include "pagx/nodes/InnerShadowFilter.h"
 #include "pagx/nodes/LinearGradient.h"
 #include "pagx/nodes/Path.h"
@@ -47,9 +47,10 @@
 #include "pagx/nodes/TextBox.h"
 #include "pagx/svg/SVGBlendMode.h"
 #include "pagx/svg/SVGPathParser.h"
-#include "pagx/svg/SVGTextLayout.h"
+#include "pagx/types/Rect.h"
 #include "pagx/utils/Base64.h"
 #include "pagx/utils/StringParser.h"
+#include "renderer/TextLayout.h"
 
 namespace pagx {
 
@@ -441,6 +442,8 @@ class SVGWriterContext {
   std::string generateId(const std::string& prefix) {
     return prefix + std::to_string(nextDefId++);
   }
+
+  TextLayout* textLayout = nullptr;
 
  private:
   int nextDefId = 0;
@@ -1098,40 +1101,18 @@ void SVGWriter::writeText(SVGBuilder& out, const Text* text, const FillStrokeInf
   float fontSize = text->fontSize;
   bool needsMultiLine = textBox != nullptr && textBox->wordWrap && textBox->size.width > 0;
 
-  // ── Multi-line: parse text and break into lines ──
-  float boxWidth = 0;
-  float lineHeight = 0;
-  const std::string& content = text->text;
-  std::vector<SVGCharInfo> chars;
-  std::vector<SVGTextLine> lines;
+  // ── Multi-line: use TextLayout for accurate line breaking ──
+  SVGTextLayoutResult svgLayoutResult;
 
-  if (needsMultiLine) {
-    boxWidth = textBox->size.width;
-    lineHeight = textBox->lineHeight > 0 ? textBox->lineHeight : fontSize * 1.2f;
+  if (needsMultiLine && _context->textLayout != nullptr) {
+    std::vector<Text*> textElements = {const_cast<Text*>(text)};
+    svgLayoutResult = _context->textLayout->layoutForSVG(textElements, textBox);
 
-    chars.reserve(content.size());
-    size_t pos = 0;
-    while (pos < content.size()) {
-      int32_t unichar = 0;
-      size_t len = SVGDecodeUTF8Char(content.data() + pos, content.size() - pos, &unichar);
-      if (len == 0) {
-        pos++;
-        continue;
-      }
-      float advance = 0;
-      if (unichar != '\n') {
-        advance = EstimateCharAdvance(unichar, fontSize) + text->letterSpacing;
-      }
-      chars.push_back({unichar, pos, len, advance});
-      pos += len;
+    // Remove trailing empty lines.
+    while (svgLayoutResult.lines.size() > 1 && svgLayoutResult.lines.back().text.empty()) {
+      svgLayoutResult.lines.pop_back();
     }
-
-    lines = BreakTextIntoLines(chars, boxWidth);
-
-    while (lines.size() > 1 && lines.back().charCount == 0) {
-      lines.pop_back();
-    }
-    if (lines.empty()) {
+    if (svgLayoutResult.lines.empty()) {
       return;
     }
   }
@@ -1158,11 +1139,15 @@ void SVGWriter::writeText(SVGBuilder& out, const Text* text, const FillStrokeInf
         break;
     }
 
-    if (needsMultiLine) {
+    if (needsMultiLine && !svgLayoutResult.lines.empty()) {
       float boxHeight = textBox->size.height;
-      float totalHeight = static_cast<float>(lines.size()) * lineHeight;
-      // Approximate ascent ratio for common fonts (ascender ≈ 80% of em-square).
-      float ascent = fontSize * 0.8f;
+      // Compute total height from actual line metrics.
+      float totalHeight = 0;
+      for (auto& line : svgLayoutResult.lines) {
+        totalHeight += line.lineHeight;
+      }
+      // Use the real ascent from the first line for baseline positioning.
+      float ascent = svgLayoutResult.lines[0].ascent;
       float yOffset = 0;
       if (boxHeight > 0) {
         switch (textBox->paragraphAlign) {
@@ -1226,23 +1211,26 @@ void SVGWriter::writeText(SVGBuilder& out, const Text* text, const FillStrokeInf
   };
 
   // ── Write content ──
-  if (needsMultiLine) {
+  if (needsMultiLine && !svgLayoutResult.lines.empty()) {
     float currentY = firstLineY;
     bool isFirst = true;
-    for (size_t i = 0; i < lines.size(); i++) {
-      auto& line = lines[i];
-      std::string lineText = ExtractLineText(content, chars, line);
-      if (lineText.empty() && i < lines.size() - 1) {
+    for (size_t i = 0; i < svgLayoutResult.lines.size(); i++) {
+      auto& line = svgLayoutResult.lines[i];
+      if (line.text.empty() && i < svgLayoutResult.lines.size() - 1) {
+        // Skip empty lines in the middle but still advance Y.
+        if (!isFirst) {
+          currentY += line.lineHeight;
+        }
         continue;
       }
       if (!isFirst) {
-        currentY += lineHeight;
+        currentY += line.lineHeight;
       }
       out.openElement("text");
       writeSharedTextAttrs();
       out.addAttribute("x", x);
       out.addAttribute("y", currentY);
-      out.closeElementWithText(lineText);
+      out.closeElementWithText(line.text);
       isFirst = false;
     }
   } else {
@@ -1408,6 +1396,12 @@ std::string SVGExporter::ToSVG(const PAGXDocument& doc, const Options& options) 
   SVGBuilder svg(options.indent);
   SVGBuilder defs(options.indent, 2);
   SVGWriterContext context;
+  TextLayout textLayout;
+  auto systemFallbacks = cli::SystemFonts::FallbackTypefaces();
+  for (const auto& loc : systemFallbacks) {
+    textLayout.addFallbackFont(loc.path, loc.ttcIndex, loc.fontFamily, loc.fontStyle);
+  }
+  context.textLayout = &textLayout;
   SVGWriter writer(&defs, &context);
 
   if (options.xmlDeclaration) {
