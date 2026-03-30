@@ -117,964 +117,769 @@ void TextLayout::addFallbackFont(const std::string& path, int ttcIndex,
   fallbackTypefaces.emplace_back(path, ttcIndex, fontFamily, fontStyle);
 }
 
-// Build context that maintains state during text layout
-class TextLayoutContext {
- public:
-  TextLayoutContext(TextLayout* textLayout, PAGXDocument* document)
-      : textLayout(textLayout), document(document) {
+TextLayoutContext::TextLayoutContext(TextLayout* textLayout, PAGXDocument* document)
+    : textLayout(textLayout), document(document) {
+}
+
+TextLayoutResult TextLayoutContext::run() {
+  if (document == nullptr) {
+    return {};
   }
 
-  TextLayoutResult run() {
-    if (document == nullptr) {
-      return {};
-    }
+  // Process all layers
+  for (auto* layer : document->layers) {
+    processLayer(layer);
+  }
 
-    // Process all layers
-    for (auto* layer : document->layers) {
-      processLayer(layer);
-    }
-
-    // Process compositions in nodes
-    for (auto& node : document->nodes) {
-      if (node->nodeType() == NodeType::Composition) {
-        auto* comp = static_cast<Composition*>(node.get());
-        for (auto* layer : comp->layers) {
-          processLayer(layer);
-        }
+  // Process compositions in nodes
+  for (auto& node : document->nodes) {
+    if (node->nodeType() == NodeType::Composition) {
+      auto* comp = static_cast<Composition*>(node.get());
+      for (auto* layer : comp->layers) {
+        processLayer(layer);
       }
     }
-
-    TextLayoutResult output = {};
-    output.shapedTextMap = std::move(result);
-    output.textOrder = std::move(textOrder);
-    return output;
   }
 
- private:
-  // A run of glyphs with the same font (for shaping).
-  struct ShapedGlyphRun {
-    tgfx::Font font = {};
-    std::vector<tgfx::GlyphID> glyphIDs = {};
-    std::vector<float> xPositions = {};
-    float startX = 0;
-    bool canUseDefaultMode = true;
-  };
+  TextLayoutResult output = {};
+  output.shapedTextMap = std::move(result);
+  output.textOrder = std::move(textOrder);
+  return output;
+}
 
-  // Single glyph information for multi-line layout.
-  struct GlyphInfo {
-    tgfx::GlyphID glyphID = 0;
-    tgfx::Font font = {};
-    float advance = 0;
-    float xPosition = 0;
-    int32_t unichar = 0;
-    float fontSize = 0;
-    float ascent = 0;
-    float descent = 0;
-    float fontLineHeight = 0;
-    Text* sourceText = nullptr;
-    uint32_t cluster = 0;
-    float xOffset = 0;
-    float yOffset = 0;
-    uint8_t bidiLevel = 0;
-  };
+// Splits a text range into segments by newlines and tabs, appending to the output vector.
+void TextLayoutContext::SplitTextSegments(const std::string& content, size_t rangeStart,
+                                          size_t rangeLength, uint8_t bidiLevel,
+                                          std::vector<TextSegment>& segments) {
+  size_t rangeEnd = rangeStart + rangeLength;
+  size_t pos = rangeStart;
+  while (pos < rangeEnd) {
+    int32_t ch = 0;
+    size_t charLen = DecodeUTF8Char(content.data() + pos, rangeEnd - pos, &ch);
+    if (charLen == 0) {
+      pos++;
+      continue;
+    }
+    if (ch == '\n') {
+      TextSegment seg = {};
+      seg.start = pos;
+      seg.length = charLen;
+      seg.isNewline = true;
+      segments.push_back(seg);
+      pos += charLen;
+    } else if (ch == '\t') {
+      TextSegment seg = {};
+      seg.start = pos;
+      seg.length = charLen;
+      seg.isTab = true;
+      segments.push_back(seg);
+      pos += charLen;
+    } else {
+      size_t segStart = pos;
+      pos += charLen;
+      while (pos < rangeEnd) {
+        int32_t nextCh = 0;
+        size_t nextLen = DecodeUTF8Char(content.data() + pos, rangeEnd - pos, &nextCh);
+        if (nextLen == 0) {
+          pos++;
+          break;
+        }
+        if (nextCh == '\n' || nextCh == '\t') {
+          break;
+        }
+        pos += nextLen;
+      }
+      TextSegment seg = {};
+      seg.start = segStart;
+      seg.length = pos - segStart;
+#ifdef PAG_BUILD_PAGX
+      seg.bidiLevel = bidiLevel;
+#else
+      (void)bidiLevel;
+#endif
+      segments.push_back(seg);
+    }
+  }
+}
 
-  struct LineInfo {
-    std::vector<GlyphInfo> glyphs = {};
+TextLayoutContext::GlyphInfo TextLayoutContext::CreateNewlineGlyph(Text* text,
+                                                                   const tgfx::Font& font) {
+  auto metrics = font.getMetrics();
+  GlyphInfo gi = {};
+  gi.unichar = '\n';
+  gi.fontSize = text->fontSize;
+  gi.ascent = metrics.ascent;
+  gi.descent = metrics.descent;
+  gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
+  gi.sourceText = text;
+  return gi;
+}
+
+TextLayoutContext::GlyphInfo TextLayoutContext::CreateTabGlyph(Text* text, const tgfx::Font& font,
+                                                               float tabWidth, float xPosition) {
+  float nextTabStop = 0;
+  if (tabWidth > 0) {
+    nextTabStop = ceilf((xPosition + 1.0f) / tabWidth) * tabWidth;
+  }
+  float tabAdvance = nextTabStop - xPosition;
+  if (tabAdvance < 0) {
+    tabAdvance = 0;
+  }
+  auto metrics = font.getMetrics();
+  GlyphInfo gi = {};
+  gi.unichar = '\t';
+  gi.advance = tabAdvance;
+  gi.xPosition = xPosition;
+  gi.fontSize = text->fontSize;
+  gi.ascent = metrics.ascent;
+  gi.descent = metrics.descent;
+  gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
+  gi.sourceText = text;
+  return gi;
+}
+
+void TextLayoutContext::storeShapedText(Text* text, ShapedText&& shapedText) {
+  if (text == nullptr || shapedText.textBlob == nullptr) {
+    return;
+  }
+  auto it = result.find(text);
+  if (it != result.end()) {
+    it->second = std::move(shapedText);
+  } else {
+    result.emplace(text, std::move(shapedText));
+    textOrder.push_back(text);
+  }
+}
+
+int TextLayoutContext::StylePriority(const std::string& style) {
+  if (style == "Regular") {
+    return 0;
+  }
+  if (style == "Medium") {
+    return 1;
+  }
+  if (style == "Normal") {
+    return 2;
+  }
+  return 3;
+}
+
+bool TextLayoutContext::IsPreferredFontKey(const FontKey& candidate, const FontKey& current) {
+  int candidatePriority = StylePriority(candidate.style);
+  int currentPriority = StylePriority(current.style);
+  if (candidatePriority != currentPriority) {
+    return candidatePriority < currentPriority;
+  }
+  if (candidate.style != current.style) {
+    return candidate.style < current.style;
+  }
+  return candidate.family < current.family;
+}
+
+void TextLayoutContext::processLayer(Layer* layer) {
+  if (layer == nullptr) {
+    return;
+  }
+
+  auto remaining = processScope(layer->contents);
+  // Layer is the accumulation boundary. Process any remaining Text elements that were not
+  // handled by a TextBox with single-line layout.
+  for (auto* text : remaining) {
+    if (result.find(text) != result.end()) {
+      continue;
+    }
+    if (!text->glyphRuns.empty()) {
+      auto shapedText = buildShapedTextFromEmbeddedGlyphRuns(text);
+      storeShapedText(text, std::move(shapedText));
+    } else {
+      processTextWithoutLayout(text);
+    }
+  }
+
+  for (auto* child : layer->children) {
+    processLayer(child);
+  }
+}
+
+// Processes a scope of elements following the VectorElement accumulate-render model.
+// Text elements accumulate in the scope. Child Group geometry propagates upward after the
+// Group completes. Per spec, TextBox position in the node order does not affect its behavior:
+// the last TextBox in the scope applies typography to all accumulated Text elements. Returns
+// all accumulated Text elements for upward propagation to the parent scope (up to the Layer
+// boundary).
+std::vector<Text*> TextLayoutContext::processScope(const std::vector<Element*>& elements) {
+  std::vector<Text*> allText = {};
+  const TextBox* textBox = nullptr;
+  for (auto* element : elements) {
+    if (element->nodeType() == NodeType::Text) {
+      allText.push_back(static_cast<Text*>(element));
+    } else if (element->nodeType() == NodeType::Group) {
+      auto propagated = processScope(static_cast<Group*>(element)->elements);
+      allText.insert(allText.end(), propagated.begin(), propagated.end());
+    } else if (element->nodeType() == NodeType::TextBox) {
+      textBox = static_cast<const TextBox*>(element);
+    }
+  }
+  if (textBox != nullptr && !allText.empty()) {
+    processTextWithLayout(allText, textBox);
+  }
+  return allText;
+}
+
+// Checks whether all Text elements have pre-embedded GlyphRun data. If so, stores them directly
+// and returns true. Otherwise returns false, indicating that re-typesetting is needed.
+bool TextLayoutContext::tryUseEmbeddedGlyphRuns(const std::vector<Text*>& textElements) {
+  for (auto* text : textElements) {
+    if (text->glyphRuns.empty()) {
+      return false;
+    }
+  }
+  for (auto* text : textElements) {
+    auto shapedText = buildShapedTextFromEmbeddedGlyphRuns(text);
+    storeShapedText(text, std::move(shapedText));
+  }
+  return true;
+}
+
+void TextLayoutContext::processTextWithLayout(std::vector<Text*>& textElements,
+                                              const TextBox* textBox) {
+  if (tryUseEmbeddedGlyphRuns(textElements)) {
+    return;
+  }
+
+  // Shape each Text and concatenate all glyphs for unified layout within the TextBox.
+  std::vector<GlyphInfo> allGlyphs = {};
+  size_t estimatedGlyphCount = 0;
+  for (auto* text : textElements) {
+    estimatedGlyphCount += text->text.size();
+  }
+  allGlyphs.reserve(estimatedGlyphCount);
+  float totalWidth = 0;
+  bool paragraphRTL = false;
+  bool directionResolved = false;
+  for (auto* text : textElements) {
+    ShapedInfo info = {};
+    info.text = text;
+    if (!text->text.empty()) {
+      shapeText(text, info, textBox->writingMode == WritingMode::Vertical);
+      if (!directionResolved) {
+        paragraphRTL = info.paragraphRTL;
+        directionResolved = true;
+      }
+    }
+    for (auto& g : info.allGlyphs) {
+      if (g.unichar != '\n') {
+        g.xPosition += totalWidth;
+      }
+    }
+    allGlyphs.insert(allGlyphs.end(), info.allGlyphs.begin(), info.allGlyphs.end());
+    totalWidth += info.totalWidth;
+  }
+  if (allGlyphs.empty()) {
+    return;
+  }
+  if (textBox->writingMode == WritingMode::Vertical) {
+    auto columns = layoutColumns(allGlyphs, textBox);
+    buildTextBlobVertical(textBox, columns);
+  } else {
+    auto lines = layoutLines(allGlyphs, textBox);
+    buildTextBlobWithLayout(textBox, lines, paragraphRTL);
+  }
+}
+
+void TextLayoutContext::processTextWithoutLayout(Text* text) {
+  ShapedInfo info = {};
+  info.text = text;
+
+  if (!text->text.empty()) {
+    shapeText(text, info);
+  }
+
+  if (info.runs.empty()) {
+    return;
+  }
+
+  // Check if the text contains any newlines that require multi-line layout.
+  bool hasNewline = false;
+  for (auto& glyph : info.allGlyphs) {
+    if (glyph.unichar == '\n') {
+      hasNewline = true;
+      break;
+    }
+  }
+
+  if (hasNewline) {
+    buildTextBlobWithoutLayoutMultiLine(text, info);
+  } else {
+    buildTextBlobWithoutLayoutSingleLine(text, info);
+  }
+}
+
+void TextLayoutContext::buildTextBlobWithoutLayoutSingleLine(Text* text, const ShapedInfo& info) {
+  // Calculate text anchor offset based on total text width.
+  float anchorOffset = 0;
+  switch (text->textAnchor) {
+    case TextAnchor::Start:
+      break;
+    case TextAnchor::Center:
+      anchorOffset = -info.totalWidth / 2;
+      break;
+    case TextAnchor::End:
+      anchorOffset = -info.totalWidth;
+      break;
+  }
+
+  // Build TextBlob with anchor offset applied to all x positions.
+  tgfx::TextBlobBuilder builder = {};
+
+  for (auto& run : info.runs) {
+    if (run.glyphIDs.empty()) {
+      continue;
+    }
+
+    if (run.canUseDefaultMode) {
+      auto& buffer = builder.allocRun(run.font, run.glyphIDs.size(), run.startX + anchorOffset, 0);
+      memcpy(buffer.glyphs, run.glyphIDs.data(), run.glyphIDs.size() * sizeof(tgfx::GlyphID));
+    } else {
+      auto& buffer = builder.allocRunPosH(run.font, run.glyphIDs.size(), 0);
+      memcpy(buffer.glyphs, run.glyphIDs.data(), run.glyphIDs.size() * sizeof(tgfx::GlyphID));
+      auto* positions = reinterpret_cast<float*>(buffer.positions);
+      for (size_t j = 0; j < run.xPositions.size(); j++) {
+        positions[j] = run.xPositions[j] + anchorOffset;
+      }
+    }
+  }
+
+  auto textBlob = builder.build();
+  if (textBlob != nullptr) {
+    ShapedText shapedText = {};
+    shapedText.textBlob = textBlob;
+    storeShapedText(text, std::move(shapedText));
+  }
+}
+
+void TextLayoutContext::buildTextBlobWithoutLayoutMultiLine(Text* text, const ShapedInfo& info) {
+  // Split allGlyphs into lines by '\n'.
+  struct SimpleLine {
+    std::vector<const GlyphInfo*> glyphs = {};
     float width = 0;
     float maxAscent = 0;
     float maxDescent = 0;
-    float maxLineHeight = 0;
-    float metricsHeight = 0;
-    float roundingRatio = 1.0f;
   };
+  std::vector<SimpleLine> lines = {};
+  lines.emplace_back();
 
-  // Vertical glyph group with layout metrics. Usually contains a single glyph, but consecutive
-  // rotated-group characters (Latin letters, digits, etc.) are collected into one group and rendered
-  // as a horizontal run rotated 90 degrees (tate-chu-yoko).
-  struct VerticalGlyphInfo {
-    std::vector<GlyphInfo> glyphs = {};
-    VerticalOrientation orientation = VerticalOrientation::Upright;
-    float height = 0;
-    float width = 0;
-    float leadingSquash = 0;
-    bool canBreakBefore = false;
-  };
-
-  // Column of vertical text, containing glyphs arranged top to bottom.
-  struct ColumnInfo {
-    std::vector<VerticalGlyphInfo> glyphs = {};
-    float height = 0;
-    float maxColumnWidth = 0;
-  };
-
-  // Shaped text information for a single Text element.
-  struct ShapedInfo {
-    Text* text = nullptr;
-    std::vector<ShapedGlyphRun> runs = {};
-    float totalWidth = 0;
-    std::vector<GlyphInfo> allGlyphs = {};
-    bool paragraphRTL = false;
-  };
-
-  // A segment of text split by newlines and tabs for shaping.
-  struct TextSegment {
-    size_t start = 0;
-    size_t length = 0;
-    bool isNewline = false;
-    bool isTab = false;
-#ifdef PAG_BUILD_PAGX
-    uint8_t bidiLevel = 0;
-#endif
-  };
-
-  using FontKey = TextLayout::FontKey;
-
-  // Splits a text range into segments by newlines and tabs, appending to the output vector.
-  static void SplitTextSegments(const std::string& content, size_t rangeStart, size_t rangeLength,
-                                uint8_t bidiLevel, std::vector<TextSegment>& segments) {
-    size_t rangeEnd = rangeStart + rangeLength;
-    size_t pos = rangeStart;
-    while (pos < rangeEnd) {
-      int32_t ch = 0;
-      size_t charLen = DecodeUTF8Char(content.data() + pos, rangeEnd - pos, &ch);
-      if (charLen == 0) {
-        pos++;
-        continue;
-      }
-      if (ch == '\n') {
-        TextSegment seg = {};
-        seg.start = pos;
-        seg.length = charLen;
-        seg.isNewline = true;
-        segments.push_back(seg);
-        pos += charLen;
-      } else if (ch == '\t') {
-        TextSegment seg = {};
-        seg.start = pos;
-        seg.length = charLen;
-        seg.isTab = true;
-        segments.push_back(seg);
-        pos += charLen;
-      } else {
-        size_t segStart = pos;
-        pos += charLen;
-        while (pos < rangeEnd) {
-          int32_t nextCh = 0;
-          size_t nextLen = DecodeUTF8Char(content.data() + pos, rangeEnd - pos, &nextCh);
-          if (nextLen == 0) {
-            pos++;
-            break;
-          }
-          if (nextCh == '\n' || nextCh == '\t') {
-            break;
-          }
-          pos += nextLen;
-        }
-        TextSegment seg = {};
-        seg.start = segStart;
-        seg.length = pos - segStart;
-#ifdef PAG_BUILD_PAGX
-        seg.bidiLevel = bidiLevel;
-#else
-        (void)bidiLevel;
-#endif
-        segments.push_back(seg);
-      }
+  for (auto& glyph : info.allGlyphs) {
+    if (glyph.unichar == '\n') {
+      lines.emplace_back();
+      continue;
     }
+    auto& line = lines.back();
+    line.glyphs.push_back(&glyph);
+    float absAscent = fabsf(glyph.ascent);
+    if (absAscent > line.maxAscent) {
+      line.maxAscent = absAscent;
+    }
+    if (glyph.descent > line.maxDescent) {
+      line.maxDescent = glyph.descent;
+    }
+    line.width = glyph.xPosition + glyph.advance;
   }
 
-  static GlyphInfo CreateNewlineGlyph(Text* text, const tgfx::Font& font) {
-    auto metrics = font.getMetrics();
-    GlyphInfo gi = {};
-    gi.unichar = '\n';
-    gi.fontSize = text->fontSize;
-    gi.ascent = metrics.ascent;
-    gi.descent = metrics.descent;
-    gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
-    gi.sourceText = text;
-    return gi;
-  }
+  // Default line height for text without TextBox: 1.2 × fontSize (per spec line 1091).
+  float defaultLineHeight = text->fontSize * 1.2f;
 
-  static GlyphInfo CreateTabGlyph(Text* text, const tgfx::Font& font, float tabWidth,
-                                  float xPosition) {
-    float nextTabStop = 0;
-    if (tabWidth > 0) {
-      nextTabStop = ceilf((xPosition + 1.0f) / tabWidth) * tabWidth;
-    }
-    float tabAdvance = nextTabStop - xPosition;
-    if (tabAdvance < 0) {
-      tabAdvance = 0;
-    }
-    auto metrics = font.getMetrics();
-    GlyphInfo gi = {};
-    gi.unichar = '\t';
-    gi.advance = tabAdvance;
-    gi.xPosition = xPosition;
-    gi.fontSize = text->fontSize;
-    gi.ascent = metrics.ascent;
-    gi.descent = metrics.descent;
-    gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
-    gi.sourceText = text;
-    return gi;
-  }
+  // Calculate baselines: first line baseline = ascent portion of first line,
+  // subsequent lines advance by defaultLineHeight.
+  float baselineY = 0;
+  bool firstContentLine = true;
+  tgfx::TextBlobBuilder builder = {};
 
-  void storeShapedText(Text* text, ShapedText&& shapedText) {
-    if (text == nullptr || shapedText.textBlob == nullptr) {
-      return;
-    }
-    auto it = result.find(text);
-    if (it != result.end()) {
-      it->second = std::move(shapedText);
-    } else {
-      result.emplace(text, std::move(shapedText));
-      textOrder.push_back(text);
-    }
-  }
-
-  static int StylePriority(const std::string& style) {
-    if (style == "Regular") {
-      return 0;
-    }
-    if (style == "Medium") {
-      return 1;
-    }
-    if (style == "Normal") {
-      return 2;
-    }
-    return 3;
-  }
-
-  static bool IsPreferredFontKey(const FontKey& candidate, const FontKey& current) {
-    int candidatePriority = StylePriority(candidate.style);
-    int currentPriority = StylePriority(current.style);
-    if (candidatePriority != currentPriority) {
-      return candidatePriority < currentPriority;
-    }
-    if (candidate.style != current.style) {
-      return candidate.style < current.style;
-    }
-    return candidate.family < current.family;
-  }
-
-  void processLayer(Layer* layer) {
-    if (layer == nullptr) {
-      return;
+  for (size_t lineIdx = 0; lineIdx < lines.size(); lineIdx++) {
+    auto& line = lines[lineIdx];
+    if (line.glyphs.empty()) {
+      baselineY += defaultLineHeight;
+      continue;
     }
 
-    auto remaining = processScope(layer->contents);
-    // Layer is the accumulation boundary. Process any remaining Text elements that were not
-    // handled by a TextBox with single-line layout.
-    for (auto* text : remaining) {
-      if (result.find(text) != result.end()) {
-        continue;
-      }
-      if (!text->glyphRuns.empty()) {
-        auto shapedText = buildShapedTextFromEmbeddedGlyphRuns(text);
-        storeShapedText(text, std::move(shapedText));
-      } else {
-        processTextWithoutLayout(text);
-      }
+    if (firstContentLine) {
+      // First non-empty line: baseline at maxAscent (text starts from the top).
+      baselineY += line.maxAscent;
+      firstContentLine = false;
     }
 
-    for (auto* child : layer->children) {
-      processLayer(child);
-    }
-  }
-
-  // Processes a scope of elements following the VectorElement accumulate-render model.
-  // Text elements accumulate in the scope. Child Group geometry propagates upward after the
-  // Group completes. Per spec, TextBox position in the node order does not affect its behavior:
-  // the last TextBox in the scope applies typography to all accumulated Text elements. Returns
-  // all accumulated Text elements for upward propagation to the parent scope (up to the Layer
-  // boundary).
-  std::vector<Text*> processScope(const std::vector<Element*>& elements) {
-    std::vector<Text*> allText = {};
-    const TextBox* textBox = nullptr;
-    for (auto* element : elements) {
-      if (element->nodeType() == NodeType::Text) {
-        allText.push_back(static_cast<Text*>(element));
-      } else if (element->nodeType() == NodeType::Group) {
-        auto propagated = processScope(static_cast<Group*>(element)->elements);
-        allText.insert(allText.end(), propagated.begin(), propagated.end());
-      } else if (element->nodeType() == NodeType::TextBox) {
-        textBox = static_cast<const TextBox*>(element);
-      }
-    }
-    if (textBox != nullptr && !allText.empty()) {
-      processTextWithLayout(allText, textBox);
-    }
-    return allText;
-  }
-
-  // Checks whether all Text elements have pre-embedded GlyphRun data. If so, stores them directly
-  // and returns true. Otherwise returns false, indicating that re-typesetting is needed.
-  bool tryUseEmbeddedGlyphRuns(const std::vector<Text*>& textElements) {
-    for (auto* text : textElements) {
-      if (text->glyphRuns.empty()) {
-        return false;
-      }
-    }
-    for (auto* text : textElements) {
-      auto shapedText = buildShapedTextFromEmbeddedGlyphRuns(text);
-      storeShapedText(text, std::move(shapedText));
-    }
-    return true;
-  }
-
-  void processTextWithLayout(std::vector<Text*>& textElements, const TextBox* textBox) {
-    if (tryUseEmbeddedGlyphRuns(textElements)) {
-      return;
-    }
-
-    // Shape each Text and concatenate all glyphs for unified layout within the TextBox.
-    std::vector<GlyphInfo> allGlyphs = {};
-    size_t estimatedGlyphCount = 0;
-    for (auto* text : textElements) {
-      estimatedGlyphCount += text->text.size();
-    }
-    allGlyphs.reserve(estimatedGlyphCount);
-    float totalWidth = 0;
-    bool paragraphRTL = false;
-    bool directionResolved = false;
-    for (auto* text : textElements) {
-      ShapedInfo info = {};
-      info.text = text;
-      if (!text->text.empty()) {
-        shapeText(text, info, textBox->writingMode == WritingMode::Vertical);
-        if (!directionResolved) {
-          paragraphRTL = info.paragraphRTL;
-          directionResolved = true;
-        }
-      }
-      for (auto& g : info.allGlyphs) {
-        if (g.unichar != '\n') {
-          g.xPosition += totalWidth;
-        }
-      }
-      allGlyphs.insert(allGlyphs.end(), info.allGlyphs.begin(), info.allGlyphs.end());
-      totalWidth += info.totalWidth;
-    }
-    if (allGlyphs.empty()) {
-      return;
-    }
-    if (textBox->writingMode == WritingMode::Vertical) {
-      auto columns = layoutColumns(allGlyphs, textBox);
-      buildTextBlobVertical(textBox, columns);
-    } else {
-      auto lines = layoutLines(allGlyphs, textBox);
-      buildTextBlobWithLayout(textBox, lines, paragraphRTL);
-    }
-  }
-
-  void processTextWithoutLayout(Text* text) {
-    ShapedInfo info = {};
-    info.text = text;
-
-    if (!text->text.empty()) {
-      shapeText(text, info);
-    }
-
-    if (info.runs.empty()) {
-      return;
-    }
-
-    // Check if the text contains any newlines that require multi-line layout.
-    bool hasNewline = false;
-    for (auto& glyph : info.allGlyphs) {
-      if (glyph.unichar == '\n') {
-        hasNewline = true;
-        break;
-      }
-    }
-
-    if (hasNewline) {
-      buildTextBlobWithoutLayoutMultiLine(text, info);
-    } else {
-      buildTextBlobWithoutLayoutSingleLine(text, info);
-    }
-  }
-
-  void buildTextBlobWithoutLayoutSingleLine(Text* text, const ShapedInfo& info) {
-    // Calculate text anchor offset based on total text width.
+    // Calculate text anchor offset for this line independently.
     float anchorOffset = 0;
     switch (text->textAnchor) {
       case TextAnchor::Start:
         break;
       case TextAnchor::Center:
-        anchorOffset = -info.totalWidth / 2;
+        anchorOffset = -line.width / 2;
         break;
       case TextAnchor::End:
-        anchorOffset = -info.totalWidth;
+        anchorOffset = -line.width;
         break;
     }
 
-    // Build TextBlob with anchor offset applied to all x positions.
-    tgfx::TextBlobBuilder builder = {};
+    // Group consecutive glyphs by font into runs for efficient TextBlob building.
+    size_t glyphIdx = 0;
+    while (glyphIdx < line.glyphs.size()) {
+      auto* startGlyph = line.glyphs[glyphIdx];
+      auto currentFont = startGlyph->font;
+      auto currentTypefaceID = currentFont.getTypeface()->uniqueID();
+      size_t runStart = glyphIdx;
 
-    for (auto& run : info.runs) {
-      if (run.glyphIDs.empty()) {
-        continue;
-      }
-
-      if (run.canUseDefaultMode) {
-        auto& buffer =
-            builder.allocRun(run.font, run.glyphIDs.size(), run.startX + anchorOffset, 0);
-        memcpy(buffer.glyphs, run.glyphIDs.data(), run.glyphIDs.size() * sizeof(tgfx::GlyphID));
-      } else {
-        auto& buffer = builder.allocRunPosH(run.font, run.glyphIDs.size(), 0);
-        memcpy(buffer.glyphs, run.glyphIDs.data(), run.glyphIDs.size() * sizeof(tgfx::GlyphID));
-        auto* positions = reinterpret_cast<float*>(buffer.positions);
-        for (size_t j = 0; j < run.xPositions.size(); j++) {
-          positions[j] = run.xPositions[j] + anchorOffset;
-        }
-      }
-    }
-
-    auto textBlob = builder.build();
-    if (textBlob != nullptr) {
-      ShapedText shapedText = {};
-      shapedText.textBlob = textBlob;
-      storeShapedText(text, std::move(shapedText));
-    }
-  }
-
-  void buildTextBlobWithoutLayoutMultiLine(Text* text, const ShapedInfo& info) {
-    // Split allGlyphs into lines by '\n'.
-    struct SimpleLine {
-      std::vector<const GlyphInfo*> glyphs = {};
-      float width = 0;
-      float maxAscent = 0;
-      float maxDescent = 0;
-    };
-    std::vector<SimpleLine> lines = {};
-    lines.emplace_back();
-
-    for (auto& glyph : info.allGlyphs) {
-      if (glyph.unichar == '\n') {
-        lines.emplace_back();
-        continue;
-      }
-      auto& line = lines.back();
-      line.glyphs.push_back(&glyph);
-      float absAscent = fabsf(glyph.ascent);
-      if (absAscent > line.maxAscent) {
-        line.maxAscent = absAscent;
-      }
-      if (glyph.descent > line.maxDescent) {
-        line.maxDescent = glyph.descent;
-      }
-      line.width = glyph.xPosition + glyph.advance;
-    }
-
-    // Default line height for text without TextBox: 1.2 × fontSize (per spec line 1091).
-    float defaultLineHeight = text->fontSize * 1.2f;
-
-    // Calculate baselines: first line baseline = ascent portion of first line,
-    // subsequent lines advance by defaultLineHeight.
-    float baselineY = 0;
-    bool firstContentLine = true;
-    tgfx::TextBlobBuilder builder = {};
-
-    for (size_t lineIdx = 0; lineIdx < lines.size(); lineIdx++) {
-      auto& line = lines[lineIdx];
-      if (line.glyphs.empty()) {
-        baselineY += defaultLineHeight;
-        continue;
-      }
-
-      if (firstContentLine) {
-        // First non-empty line: baseline at maxAscent (text starts from the top).
-        baselineY += line.maxAscent;
-        firstContentLine = false;
-      }
-
-      // Calculate text anchor offset for this line independently.
-      float anchorOffset = 0;
-      switch (text->textAnchor) {
-        case TextAnchor::Start:
-          break;
-        case TextAnchor::Center:
-          anchorOffset = -line.width / 2;
-          break;
-        case TextAnchor::End:
-          anchorOffset = -line.width;
-          break;
-      }
-
-      // Group consecutive glyphs by font into runs for efficient TextBlob building.
-      size_t glyphIdx = 0;
+      // Collect consecutive glyphs with the same typeface.
       while (glyphIdx < line.glyphs.size()) {
-        auto* startGlyph = line.glyphs[glyphIdx];
-        auto currentFont = startGlyph->font;
-        auto currentTypefaceID = currentFont.getTypeface()->uniqueID();
-        size_t runStart = glyphIdx;
-
-        // Collect consecutive glyphs with the same typeface.
-        while (glyphIdx < line.glyphs.size()) {
-          auto glyphTypefaceID = line.glyphs[glyphIdx]->font.getTypeface()->uniqueID();
-          if (glyphTypefaceID != currentTypefaceID) {
-            break;
-          }
-          glyphIdx++;
+        auto glyphTypefaceID = line.glyphs[glyphIdx]->font.getTypeface()->uniqueID();
+        if (glyphTypefaceID != currentTypefaceID) {
+          break;
         }
-
-        size_t runLength = glyphIdx - runStart;
-        auto& buffer = builder.allocRunPos(currentFont, runLength);
-        for (size_t j = 0; j < runLength; j++) {
-          auto* g = line.glyphs[runStart + j];
-          buffer.glyphs[j] = g->glyphID;
-          auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
-          positions[j] = {g->xPosition + anchorOffset, baselineY};
-        }
+        glyphIdx++;
       }
 
-      baselineY += defaultLineHeight;
+      size_t runLength = glyphIdx - runStart;
+      auto& buffer = builder.allocRunPos(currentFont, runLength);
+      for (size_t j = 0; j < runLength; j++) {
+        auto* g = line.glyphs[runStart + j];
+        buffer.glyphs[j] = g->glyphID;
+        auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
+        positions[j] = {g->xPosition + anchorOffset, baselineY};
+      }
     }
 
-    auto textBlob = builder.build();
-    if (textBlob != nullptr) {
-      ShapedText shapedText = {};
-      shapedText.textBlob = textBlob;
-      storeShapedText(text, std::move(shapedText));
-    }
+    baselineY += defaultLineHeight;
   }
 
-  ShapedText buildShapedTextFromEmbeddedGlyphRuns(const Text* text) {
+  auto textBlob = builder.build();
+  if (textBlob != nullptr) {
     ShapedText shapedText = {};
-    tgfx::TextBlobBuilder builder = {};
+    shapedText.textBlob = textBlob;
+    storeShapedText(text, std::move(shapedText));
+  }
+}
 
-    for (const auto& run : text->glyphRuns) {
-      if (run->glyphs.empty()) {
-        continue;
-      }
+ShapedText TextLayoutContext::buildShapedTextFromEmbeddedGlyphRuns(const Text* text) {
+  ShapedText shapedText = {};
+  tgfx::TextBlobBuilder builder = {};
 
-      auto typeface = buildTypefaceFromFont(run->font);
-      if (typeface == nullptr) {
-        continue;
-      }
+  for (const auto& run : text->glyphRuns) {
+    if (run->glyphs.empty()) {
+      continue;
+    }
 
-      // Calculate font size based on fontSize and unitsPerEm
-      // Rendering scale = fontSize / unitsPerEm
-      int unitsPerEm = (run->font != nullptr) ? run->font->unitsPerEm : 1;
-      if (unitsPerEm <= 0) {
-        unitsPerEm = 1;
-      }
-      float fontSizeForTypeface = run->fontSize / static_cast<float>(unitsPerEm);
-      tgfx::Font font(typeface, fontSizeForTypeface);
-      font.setFauxBold(text->fauxBold);
-      font.setFauxItalic(text->fauxItalic);
-      size_t count = run->glyphs.size();
+    auto typeface = buildTypefaceFromFont(run->font);
+    if (typeface == nullptr) {
+      continue;
+    }
 
-      // Collect anchors for each glyph in this run
-      if (!run->anchors.empty()) {
-        for (size_t i = 0; i < count; i++) {
-          if (i < run->anchors.size()) {
-            shapedText.anchors.push_back(tgfx::Point::Make(run->anchors[i].x, run->anchors[i].y));
-          } else {
-            shapedText.anchors.push_back(tgfx::Point::Zero());
-          }
+    // Calculate font size based on fontSize and unitsPerEm
+    // Rendering scale = fontSize / unitsPerEm
+    int unitsPerEm = (run->font != nullptr) ? run->font->unitsPerEm : 1;
+    if (unitsPerEm <= 0) {
+      unitsPerEm = 1;
+    }
+    float fontSizeForTypeface = run->fontSize / static_cast<float>(unitsPerEm);
+    tgfx::Font font(typeface, fontSizeForTypeface);
+    font.setFauxBold(text->fauxBold);
+    font.setFauxItalic(text->fauxItalic);
+    size_t count = run->glyphs.size();
+
+    // Collect anchors for each glyph in this run
+    if (!run->anchors.empty()) {
+      for (size_t i = 0; i < count; i++) {
+        if (i < run->anchors.size()) {
+          shapedText.anchors.push_back(tgfx::Point::Make(run->anchors[i].x, run->anchors[i].y));
+        } else {
+          shapedText.anchors.push_back(tgfx::Point::Zero());
         }
       }
+    }
 
-      bool hasTransforms = !run->scales.empty() || !run->rotations.empty() || !run->skews.empty();
+    bool hasTransforms = !run->scales.empty() || !run->rotations.empty() || !run->skews.empty();
 
-      if (hasTransforms) {
-        // Matrix mode: build a full affine transform per glyph.
-        // Transform order (per spec): translate(-anchor) → scale → skew → rotate →
-        // translate(anchor) → translate(position)
-        auto& buffer = builder.allocRunMatrix(font, count);
-        memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
-        auto* matrices = reinterpret_cast<tgfx::Matrix*>(buffer.positions);
-        float currentX = run->x;
-        for (size_t i = 0; i < count; i++) {
-          // Compute position
-          float posX = 0;
-          float posY = 0;
-          if (i < run->positions.size()) {
-            posX = run->x + run->positions[i].x;
-            posY = run->y + run->positions[i].y;
-            if (i < run->xOffsets.size()) {
-              posX += run->xOffsets[i];
-            }
-          } else if (i < run->xOffsets.size()) {
-            posX = run->x + run->xOffsets[i];
-            posY = run->y;
-          } else {
-            posX = currentX;
-            posY = run->y;
-            currentX += font.getAdvance(run->glyphs[i]);
-          }
-
-          // Get per-glyph transform values (default to identity values)
-          float sx = (i < run->scales.size()) ? run->scales[i].x : 1.0f;
-          float sy = (i < run->scales.size()) ? run->scales[i].y : 1.0f;
-          float rotation = (i < run->rotations.size()) ? run->rotations[i] : 0.0f;
-          float skew = (i < run->skews.size()) ? run->skews[i] : 0.0f;
-
-          // Compute anchor: default anchor is (advance * 0.5, 0), plus offset from anchors array
-          float anchorX = font.getAdvance(run->glyphs[i]) * 0.5f;
-          float anchorY = 0.0f;
-          if (i < run->anchors.size()) {
-            anchorX += run->anchors[i].x;
-            anchorY += run->anchors[i].y;
-          }
-
-          // Build the transform matrix
-          auto matrix = tgfx::Matrix::I();
-
-          // 1. translate(-anchor)
-          matrix.preTranslate(-anchorX, -anchorY);
-          // 2. scale
-          if (sx != 1.0f || sy != 1.0f) {
-            matrix.preScale(sx, sy);
-          }
-          // 3. skew (along vertical axis)
-          if (skew != 0.0f) {
-            float skewRadians = skew * static_cast<float>(M_PI) / 180.0f;
-            auto skewMatrix = tgfx::Matrix::I();
-            skewMatrix.setSkewX(-std::tan(skewRadians));
-            matrix.preConcat(skewMatrix);
-          }
-          // 4. rotate
-          if (rotation != 0.0f) {
-            matrix.preRotate(rotation);
-          }
-          // 5. translate(anchor)
-          matrix.preTranslate(anchorX, anchorY);
-          // 6. translate(position)
-          matrix.preTranslate(posX, posY);
-
-          matrices[i] = matrix;
-        }
-      } else if (!run->positions.empty() && run->positions.size() >= count) {
-        // Point mode: each glyph has (x, y) offset combined with overall x/y
-        auto& buffer = builder.allocRunPos(font, count);
-        memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
-        auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
-        for (size_t i = 0; i < count; i++) {
-          float posX = run->x + run->positions[i].x;
-          float posY = run->y + run->positions[i].y;
+    if (hasTransforms) {
+      // Matrix mode: build a full affine transform per glyph.
+      // Transform order (per spec): translate(-anchor) → scale → skew → rotate →
+      // translate(anchor) → translate(position)
+      auto& buffer = builder.allocRunMatrix(font, count);
+      memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
+      auto* matrices = reinterpret_cast<tgfx::Matrix*>(buffer.positions);
+      float currentX = run->x;
+      for (size_t i = 0; i < count; i++) {
+        // Compute position
+        float posX = 0;
+        float posY = 0;
+        if (i < run->positions.size()) {
+          posX = run->x + run->positions[i].x;
+          posY = run->y + run->positions[i].y;
           if (i < run->xOffsets.size()) {
             posX += run->xOffsets[i];
           }
-          positions[i] = tgfx::Point::Make(posX, posY);
+        } else if (i < run->xOffsets.size()) {
+          posX = run->x + run->xOffsets[i];
+          posY = run->y;
+        } else {
+          posX = currentX;
+          posY = run->y;
+          currentX += font.getAdvance(run->glyphs[i]);
         }
-      } else if (!run->xOffsets.empty() && run->xOffsets.size() >= count) {
-        // Horizontal mode: x offsets + shared y
-        auto& buffer = builder.allocRunPosH(font, count, run->y);
-        memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
-        for (size_t i = 0; i < count; i++) {
-          buffer.positions[i] = run->x + run->xOffsets[i];
-        }
-      } else {
-        // Default mode: use font's advance values to position glyphs
-        auto& buffer = builder.allocRun(font, count, run->x, run->y);
-        memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
-        // No positions to fill - tgfx will compute from font advances
-      }
-    }
 
-    shapedText.textBlob = builder.build();
-    return shapedText;
+        // Get per-glyph transform values (default to identity values)
+        float sx = (i < run->scales.size()) ? run->scales[i].x : 1.0f;
+        float sy = (i < run->scales.size()) ? run->scales[i].y : 1.0f;
+        float rotation = (i < run->rotations.size()) ? run->rotations[i] : 0.0f;
+        float skew = (i < run->skews.size()) ? run->skews[i] : 0.0f;
+
+        // Compute anchor: default anchor is (advance * 0.5, 0), plus offset from anchors array
+        float anchorX = font.getAdvance(run->glyphs[i]) * 0.5f;
+        float anchorY = 0.0f;
+        if (i < run->anchors.size()) {
+          anchorX += run->anchors[i].x;
+          anchorY += run->anchors[i].y;
+        }
+
+        // Build the transform matrix
+        auto matrix = tgfx::Matrix::I();
+
+        // 1. translate(-anchor)
+        matrix.preTranslate(-anchorX, -anchorY);
+        // 2. scale
+        if (sx != 1.0f || sy != 1.0f) {
+          matrix.preScale(sx, sy);
+        }
+        // 3. skew (along vertical axis)
+        if (skew != 0.0f) {
+          float skewRadians = skew * static_cast<float>(M_PI) / 180.0f;
+          auto skewMatrix = tgfx::Matrix::I();
+          skewMatrix.setSkewX(-std::tan(skewRadians));
+          matrix.preConcat(skewMatrix);
+        }
+        // 4. rotate
+        if (rotation != 0.0f) {
+          matrix.preRotate(rotation);
+        }
+        // 5. translate(anchor)
+        matrix.preTranslate(anchorX, anchorY);
+        // 6. translate(position)
+        matrix.preTranslate(posX, posY);
+
+        matrices[i] = matrix;
+      }
+    } else if (!run->positions.empty() && run->positions.size() >= count) {
+      // Point mode: each glyph has (x, y) offset combined with overall x/y
+      auto& buffer = builder.allocRunPos(font, count);
+      memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
+      auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
+      for (size_t i = 0; i < count; i++) {
+        float posX = run->x + run->positions[i].x;
+        float posY = run->y + run->positions[i].y;
+        if (i < run->xOffsets.size()) {
+          posX += run->xOffsets[i];
+        }
+        positions[i] = tgfx::Point::Make(posX, posY);
+      }
+    } else if (!run->xOffsets.empty() && run->xOffsets.size() >= count) {
+      // Horizontal mode: x offsets + shared y
+      auto& buffer = builder.allocRunPosH(font, count, run->y);
+      memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
+      for (size_t i = 0; i < count; i++) {
+        buffer.positions[i] = run->x + run->xOffsets[i];
+      }
+    } else {
+      // Default mode: use font's advance values to position glyphs
+      auto& buffer = builder.allocRun(font, count, run->x, run->y);
+      memcpy(buffer.glyphs, run->glyphs.data(), count * sizeof(tgfx::GlyphID));
+      // No positions to fill - tgfx will compute from font advances
+    }
   }
 
-  std::shared_ptr<tgfx::Typeface> buildTypefaceFromFont(const Font* fontNode) {
-    if (fontNode == nullptr || fontNode->glyphs.empty()) {
-      return nullptr;
-    }
+  shapedText.textBlob = builder.build();
+  return shapedText;
+}
 
-    auto it = fontCache.find(fontNode);
-    if (it != fontCache.end()) {
-      return it->second;
-    }
+std::shared_ptr<tgfx::Typeface> TextLayoutContext::buildTypefaceFromFont(const Font* fontNode) {
+  if (fontNode == nullptr || fontNode->glyphs.empty()) {
+    return nullptr;
+  }
 
-    // Determine if font is path-based or image-based
-    bool hasPath = false;
-    bool hasImage = false;
+  auto it = fontCache.find(fontNode);
+  if (it != fontCache.end()) {
+    return it->second;
+  }
+
+  // Determine if font is path-based or image-based
+  bool hasPath = false;
+  bool hasImage = false;
+  for (const auto& glyph : fontNode->glyphs) {
+    if (glyph->path != nullptr) {
+      hasPath = true;
+    }
+    if (glyph->image != nullptr) {
+      hasImage = true;
+    }
+  }
+
+  std::shared_ptr<tgfx::Typeface> typeface = nullptr;
+  if (hasPath && !hasImage) {
+    tgfx::PathTypefaceBuilder builder;
     for (const auto& glyph : fontNode->glyphs) {
       if (glyph->path != nullptr) {
-        hasPath = true;
+        auto path = ToTGFX(*glyph->path);
+        if (glyph->offset.x != 0 || glyph->offset.y != 0) {
+          path.transform(tgfx::Matrix::MakeTrans(glyph->offset.x, glyph->offset.y));
+        }
+        builder.addGlyph(path, glyph->advance);
+      } else {
+        // Invisible spacing glyph (e.g. space): add with empty path to preserve advance width.
+        builder.addGlyph(tgfx::Path(), glyph->advance);
       }
+    }
+    typeface = builder.detach();
+  } else if (hasImage && !hasPath) {
+    tgfx::ImageTypefaceBuilder builder;
+    for (const auto& glyph : fontNode->glyphs) {
       if (glyph->image != nullptr) {
-        hasImage = true;
-      }
-    }
-
-    std::shared_ptr<tgfx::Typeface> typeface = nullptr;
-    if (hasPath && !hasImage) {
-      tgfx::PathTypefaceBuilder builder;
-      for (const auto& glyph : fontNode->glyphs) {
-        if (glyph->path != nullptr) {
-          auto path = ToTGFX(*glyph->path);
-          if (glyph->offset.x != 0 || glyph->offset.y != 0) {
-            path.transform(tgfx::Matrix::MakeTrans(glyph->offset.x, glyph->offset.y));
+        std::shared_ptr<tgfx::ImageCodec> codec = nullptr;
+        auto imageNode = glyph->image;
+        if (imageNode->data != nullptr) {
+          codec = tgfx::ImageCodec::MakeFrom(ToTGFXData(imageNode->data));
+        } else if (imageNode->filePath.find("data:") == 0) {
+          auto data = DecodeBase64DataURI(imageNode->filePath);
+          if (data) {
+            codec = tgfx::ImageCodec::MakeFrom(ToTGFXData(data));
           }
-          builder.addGlyph(path, glyph->advance);
-        } else {
-          // Invisible spacing glyph (e.g. space): add with empty path to preserve advance width.
-          builder.addGlyph(tgfx::Path(), glyph->advance);
+        } else if (!imageNode->filePath.empty()) {
+          codec = tgfx::ImageCodec::MakeFrom(imageNode->filePath);
+        }
+
+        if (codec) {
+          builder.addGlyph(codec, ToTGFX(glyph->offset), glyph->advance);
         }
       }
-      typeface = builder.detach();
-    } else if (hasImage && !hasPath) {
-      tgfx::ImageTypefaceBuilder builder;
-      for (const auto& glyph : fontNode->glyphs) {
-        if (glyph->image != nullptr) {
-          std::shared_ptr<tgfx::ImageCodec> codec = nullptr;
-          auto imageNode = glyph->image;
-          if (imageNode->data != nullptr) {
-            codec = tgfx::ImageCodec::MakeFrom(ToTGFXData(imageNode->data));
-          } else if (imageNode->filePath.find("data:") == 0) {
-            auto data = DecodeBase64DataURI(imageNode->filePath);
-            if (data) {
-              codec = tgfx::ImageCodec::MakeFrom(ToTGFXData(data));
-            }
-          } else if (!imageNode->filePath.empty()) {
-            codec = tgfx::ImageCodec::MakeFrom(imageNode->filePath);
-          }
-
-          if (codec) {
-            builder.addGlyph(codec, ToTGFX(glyph->offset), glyph->advance);
-          }
-        }
-      }
-      typeface = builder.detach();
     }
-
-    if (typeface) {
-      fontCache[fontNode] = typeface;
-    }
-    return typeface;
+    typeface = builder.detach();
   }
 
-  void shapeText(Text* text, ShapedInfo& info, bool vertical = false) {
-    auto primaryTypeface = findTypeface(text->fontFamily, text->fontStyle);
-    if (primaryTypeface == nullptr) {
-      return;
-    }
+  if (typeface) {
+    fontCache[fontNode] = typeface;
+  }
+  return typeface;
+}
 
-    tgfx::Font primaryFont(primaryTypeface, text->fontSize);
-    primaryFont.setFauxBold(text->fauxBold);
-    primaryFont.setFauxItalic(text->fauxItalic);
-    float currentX = 0;
-    const std::string& content = text->text;
-    bool hasLetterSpacing = !FloatNearlyEqual(text->letterSpacing, 0.0f);
+void TextLayoutContext::shapeText(Text* text, ShapedInfo& info, bool vertical) {
+  auto primaryTypeface = findTypeface(text->fontFamily, text->fontStyle);
+  if (primaryTypeface == nullptr) {
+    return;
+  }
+
+  tgfx::Font primaryFont(primaryTypeface, text->fontSize);
+  primaryFont.setFauxBold(text->fauxBold);
+  primaryFont.setFauxItalic(text->fauxItalic);
+  float currentX = 0;
+  const std::string& content = text->text;
+  bool hasLetterSpacing = !FloatNearlyEqual(text->letterSpacing, 0.0f);
 
 #ifdef PAG_USE_HARFBUZZ
-    // Build fallback fonts list for HarfBuzz shaping.
-    std::vector<tgfx::Font> fallbackFonts = {};
-    fallbackFonts.reserve(textLayout->fallbackTypefaces.size());
-    for (auto& holder : textLayout->fallbackTypefaces) {
-      auto fallback = holder.getTypeface();
-      if (fallback != nullptr && fallback != primaryTypeface) {
-        tgfx::Font fallbackFont(fallback, text->fontSize);
-        fallbackFont.setFauxBold(text->fauxBold);
-        fallbackFont.setFauxItalic(text->fauxItalic);
-        fallbackFonts.push_back(std::move(fallbackFont));
-      }
+  // Build fallback fonts list for HarfBuzz shaping.
+  std::vector<tgfx::Font> fallbackFonts = {};
+  fallbackFonts.reserve(textLayout->fallbackTypefaces.size());
+  for (auto& holder : textLayout->fallbackTypefaces) {
+    auto fallback = holder.getTypeface();
+    if (fallback != nullptr && fallback != primaryTypeface) {
+      tgfx::Font fallbackFont(fallback, text->fontSize);
+      fallbackFont.setFauxBold(text->fauxBold);
+      fallbackFont.setFauxItalic(text->fauxItalic);
+      fallbackFonts.push_back(std::move(fallbackFont));
     }
+  }
 
-    // Collect newline and tab positions, then shape non-special segments.
-    std::vector<TextSegment> segments = {};
+  // Collect newline and tab positions, then shape non-special segments.
+  std::vector<TextSegment> segments = {};
 
 #ifdef PAG_BUILD_PAGX
-    // Use BiDi resolver to split text into directional runs, then further split by newlines/tabs.
-    auto bidiResult = BidiResolver::Resolve(content);
-    info.paragraphRTL = bidiResult.isRTL;
-    for (auto& run : bidiResult.runs) {
-      SplitTextSegments(content, run.start, run.length, run.level, segments);
-    }
+  // Use BiDi resolver to split text into directional runs, then further split by newlines/tabs.
+  auto bidiResult = BidiResolver::Resolve(content);
+  info.paragraphRTL = bidiResult.isRTL;
+  for (auto& run : bidiResult.runs) {
+    SplitTextSegments(content, run.start, run.length, run.level, segments);
+  }
 #else
-    SplitTextSegments(content, 0, content.size(), 0, segments);
+  SplitTextSegments(content, 0, content.size(), 0, segments);
 #endif
 
-    ShapedGlyphRun* currentRun = nullptr;
-    std::shared_ptr<tgfx::Typeface> currentTypeface = nullptr;
-    float tabWidth = text->fontSize * 4;
+  ShapedGlyphRun* currentRun = nullptr;
+  std::shared_ptr<tgfx::Typeface> currentTypeface = nullptr;
+  float tabWidth = text->fontSize * 4;
 
-    for (auto& seg : segments) {
-      if (seg.isNewline) {
-        info.allGlyphs.push_back(CreateNewlineGlyph(text, primaryFont));
-        currentX = 0;
-        currentTypeface = nullptr;
-        continue;
-      }
-
-      if (seg.isTab) {
-        auto tabGlyph = CreateTabGlyph(text, primaryFont, tabWidth, currentX);
-        currentX += tabGlyph.advance;
-        info.allGlyphs.push_back(std::move(tabGlyph));
-        currentTypeface = nullptr;
-        continue;
-      }
-
-      // Shape this text segment with HarfBuzz.
-      auto substring = content.substr(seg.start, seg.length);
-      bool rtl = false;
-#ifdef PAG_BUILD_PAGX
-      rtl = seg.bidiLevel & 1;
-#endif
-      auto shapedGlyphs =
-          HarfBuzzShaper::Shape(substring, primaryFont, fallbackFonts, vertical, rtl);
-
-#ifdef PAG_BUILD_PAGX
-      // HarfBuzz returns RTL glyphs in visual order (left-to-right). Sort them by cluster
-      // to restore logical order so that allGlyphs is always in logical order. Simple reverse
-      // is insufficient because HarfBuzz places neutral characters (spaces, punctuation) at
-      // visual positions that don't correspond to a simple reversal of the logical sequence.
-      // Visual reordering is done later via the UAX#9 L2 algorithm when building the TextBlob.
-      if (rtl) {
-        std::sort(shapedGlyphs.begin(), shapedGlyphs.end(), CompareByCluster);
-      }
-#endif
-
-      for (auto& sg : shapedGlyphs) {
-        if (sg.glyphID == 0) {
-          continue;
-        }
-
-        auto glyphTypeface = sg.font.getTypeface();
-        if (currentTypeface == nullptr || glyphTypeface != currentTypeface) {
-          info.runs.emplace_back();
-          currentRun = &info.runs.back();
-          currentRun->font = sg.font;
-          currentTypeface = glyphTypeface;
-          currentRun->startX = currentX;
-          currentRun->canUseDefaultMode = false;
-          currentRun->glyphIDs.reserve(shapedGlyphs.size());
-          currentRun->xPositions.reserve(shapedGlyphs.size());
-        }
-
-        currentRun->xPositions.push_back(currentX + sg.xOffset);
-        currentRun->glyphIDs.push_back(sg.glyphID);
-
-        auto metrics = sg.font.getMetrics();
-        // Decode the unichar at this cluster position for line breaking and other logic.
-        int32_t unichar = 0;
-        size_t clusterByteOffset = seg.start + sg.cluster;
-        if (clusterByteOffset < content.size()) {
-          DecodeUTF8Char(content.data() + clusterByteOffset, content.size() - clusterByteOffset,
-                         &unichar);
-        }
-
-        GlyphInfo gi = {};
-        gi.glyphID = sg.glyphID;
-        gi.font = sg.font;
-        gi.advance = sg.xAdvance;
-        gi.xPosition = currentX;
-        gi.unichar = unichar;
-        gi.fontSize = text->fontSize;
-        gi.ascent = metrics.ascent;
-        gi.descent = metrics.descent;
-        gi.fontLineHeight =
-            std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
-        gi.sourceText = text;
-        gi.cluster = static_cast<uint32_t>(seg.start) + sg.cluster;
-        gi.xOffset = sg.xOffset;
-        gi.yOffset = sg.yOffset;
-#ifdef PAG_BUILD_PAGX
-        gi.bidiLevel = seg.bidiLevel;
-#endif
-        info.allGlyphs.push_back(gi);
-
-        currentX += sg.xAdvance + text->letterSpacing;
-      }
+  for (auto& seg : segments) {
+    if (seg.isNewline) {
+      info.allGlyphs.push_back(CreateNewlineGlyph(text, primaryFont));
+      currentX = 0;
+      currentTypeface = nullptr;
+      continue;
     }
 
-#else
-    // Non-HarfBuzz path: original per-character glyph lookup.
+    if (seg.isTab) {
+      auto tabGlyph = CreateTabGlyph(text, primaryFont, tabWidth, currentX);
+      currentX += tabGlyph.advance;
+      info.allGlyphs.push_back(std::move(tabGlyph));
+      currentTypeface = nullptr;
+      continue;
+    }
 
-    // Fallback font cache: built on demand as fallback typefaces are loaded during glyph lookup.
-    std::unordered_map<tgfx::Typeface*, tgfx::Font> fallbackFontCache = {};
+    // Shape this text segment with HarfBuzz.
+    auto substring = content.substr(seg.start, seg.length);
+    bool rtl = false;
+#ifdef PAG_BUILD_PAGX
+    rtl = seg.bidiLevel & 1;
+#endif
+    auto shapedGlyphs = HarfBuzzShaper::Shape(substring, primaryFont, fallbackFonts, vertical, rtl);
 
-    // Current run being built
-    ShapedGlyphRun* currentRun = nullptr;
-    std::shared_ptr<tgfx::Typeface> currentTypeface = nullptr;
+#ifdef PAG_BUILD_PAGX
+    // HarfBuzz returns RTL glyphs in visual order (left-to-right). Sort them by cluster
+    // to restore logical order so that allGlyphs is always in logical order. Simple reverse
+    // is insufficient because HarfBuzz places neutral characters (spaces, punctuation) at
+    // visual positions that don't correspond to a simple reversal of the logical sequence.
+    // Visual reordering is done later via the UAX#9 L2 algorithm when building the TextBlob.
+    if (rtl) {
+      std::sort(shapedGlyphs.begin(), shapedGlyphs.end(), CompareByCluster);
+    }
+#endif
 
-    size_t i = 0;
-    while (i < content.size()) {
-      int32_t unichar = 0;
-      size_t charLen = DecodeUTF8Char(content.data() + i, content.size() - i, &unichar);
-      if (charLen == 0) {
-        i++;
-        continue;
-      }
-      i += charLen;
-
-      // Handle newline: store font metrics so \n participates in line metrics calculation
-      // when it becomes the leading cluster of the next line.
-      if (unichar == '\n') {
-        info.allGlyphs.push_back(CreateNewlineGlyph(text, primaryFont));
-        currentX = 0;
-        currentTypeface = nullptr;
-        continue;
-      }
-
-      // Handle tab character.
-      if (unichar == '\t') {
-        float tabWidth = text->fontSize * 4;
-        auto tabGlyph = CreateTabGlyph(text, primaryFont, tabWidth, currentX);
-        currentX += tabGlyph.advance;
-        info.allGlyphs.push_back(std::move(tabGlyph));
-        currentTypeface = nullptr;
+    for (auto& sg : shapedGlyphs) {
+      if (sg.glyphID == 0) {
         continue;
       }
 
-      // Try to find glyph in primary font or fallbacks
-      tgfx::GlyphID glyphID = primaryFont.getGlyphID(unichar);
-      tgfx::Font glyphFont = primaryFont;
-      std::shared_ptr<tgfx::Typeface> glyphTypeface = primaryTypeface;
-
-      if (glyphID == 0) {
-        for (auto& holder : textLayout->fallbackTypefaces) {
-          auto fallback = holder.getTypeface();
-          if (fallback == nullptr || fallback == primaryTypeface) {
-            continue;
-          }
-          auto it = fallbackFontCache.find(fallback.get());
-          if (it == fallbackFontCache.end()) {
-            tgfx::Font f(fallback, text->fontSize);
-            f.setFauxBold(text->fauxBold);
-            f.setFauxItalic(text->fauxItalic);
-            it = fallbackFontCache.emplace(fallback.get(), std::move(f)).first;
-          }
-          glyphID = it->second.getGlyphID(unichar);
-          if (glyphID != 0) {
-            glyphFont = it->second;
-            glyphTypeface = fallback;
-            break;
-          }
-        }
-      }
-
-      if (glyphID == 0) {
-        continue;
-      }
-
-      float advance = glyphFont.getAdvance(glyphID);
-
-      // Start new run if typeface changed
-      if (currentTypeface != glyphTypeface) {
+      auto glyphTypeface = sg.font.getTypeface();
+      if (currentTypeface == nullptr || glyphTypeface != currentTypeface) {
         info.runs.emplace_back();
         currentRun = &info.runs.back();
-        currentRun->font = glyphFont;
+        currentRun->font = sg.font;
         currentTypeface = glyphTypeface;
         currentRun->startX = currentX;
-        currentRun->canUseDefaultMode = !hasLetterSpacing;
-        // Reserve using remaining character count estimate (assuming average 2 bytes per char).
-        auto remaining = (content.size() - i + charLen) / 2 + 1;
-        currentRun->glyphIDs.reserve(remaining);
-        currentRun->xPositions.reserve(remaining);
+        currentRun->canUseDefaultMode = false;
+        currentRun->glyphIDs.reserve(shapedGlyphs.size());
+        currentRun->xPositions.reserve(shapedGlyphs.size());
       }
 
-      currentRun->xPositions.push_back(currentX);
-      currentRun->glyphIDs.push_back(glyphID);
+      currentRun->xPositions.push_back(currentX + sg.xOffset);
+      currentRun->glyphIDs.push_back(sg.glyphID);
 
-      auto metrics = glyphFont.getMetrics();
+      auto metrics = sg.font.getMetrics();
+      // Decode the unichar at this cluster position for line breaking and other logic.
+      int32_t unichar = 0;
+      size_t clusterByteOffset = seg.start + sg.cluster;
+      if (clusterByteOffset < content.size()) {
+        DecodeUTF8Char(content.data() + clusterByteOffset, content.size() - clusterByteOffset,
+                       &unichar);
+      }
+
       GlyphInfo gi = {};
-      gi.glyphID = glyphID;
-      gi.font = glyphFont;
-      gi.advance = advance;
+      gi.glyphID = sg.glyphID;
+      gi.font = sg.font;
+      gi.advance = sg.xAdvance;
       gi.xPosition = currentX;
       gi.unichar = unichar;
       gi.fontSize = text->fontSize;
@@ -1082,1158 +887,1264 @@ class TextLayoutContext {
       gi.descent = metrics.descent;
       gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
       gi.sourceText = text;
+      gi.cluster = static_cast<uint32_t>(seg.start) + sg.cluster;
+      gi.xOffset = sg.xOffset;
+      gi.yOffset = sg.yOffset;
+#ifdef PAG_BUILD_PAGX
+      gi.bidiLevel = seg.bidiLevel;
+#endif
       info.allGlyphs.push_back(gi);
 
-      currentX += advance + text->letterSpacing;
+      currentX += sg.xAdvance + text->letterSpacing;
     }
-#endif
-
-    // Remove the extra letterSpacing after the last glyph.
-    if (hasLetterSpacing && currentX > 0) {
-      currentX -= text->letterSpacing;
-    }
-    info.totalWidth = currentX;
   }
 
-  std::vector<LineInfo> layoutLines(const std::vector<GlyphInfo>& allGlyphs,
-                                    const TextBox* textBox) {
-    std::vector<LineInfo> lines = {};
-    lines.emplace_back();
-    auto* currentLine = &lines.back();
-    float currentLineWidth = 0;
-    int lastBreakIndex = -1;
-    float boxWidth = textBox->size.width;
-    bool doWrap = textBox->wordWrap && boxWidth > 0;
-    // Tracks the fontLineHeight of the \n that created the current line.
-    // Used as the fallback height for empty lines (e.g. consecutive \n\n).
-    float pendingNewlineFontLineHeight = 0.0f;
+#else
+  // Non-HarfBuzz path: original per-character glyph lookup.
 
-    for (size_t i = 0; i < allGlyphs.size(); i++) {
-      auto& glyph = allGlyphs[i];
+  // Fallback font cache: built on demand as fallback typefaces are loaded during glyph lookup.
+  std::unordered_map<tgfx::Typeface*, tgfx::Font> fallbackFontCache = {};
 
-      if (glyph.unichar == '\n') {
-        FinishLine(currentLine, textBox->lineHeight, pendingNewlineFontLineHeight);
+  // Current run being built
+  ShapedGlyphRun* currentRun = nullptr;
+  std::shared_ptr<tgfx::Typeface> currentTypeface = nullptr;
+
+  size_t i = 0;
+  while (i < content.size()) {
+    int32_t unichar = 0;
+    size_t charLen = DecodeUTF8Char(content.data() + i, content.size() - i, &unichar);
+    if (charLen == 0) {
+      i++;
+      continue;
+    }
+    i += charLen;
+
+    // Handle newline: store font metrics so \n participates in line metrics calculation
+    // when it becomes the leading cluster of the next line.
+    if (unichar == '\n') {
+      info.allGlyphs.push_back(CreateNewlineGlyph(text, primaryFont));
+      currentX = 0;
+      currentTypeface = nullptr;
+      continue;
+    }
+
+    // Handle tab character.
+    if (unichar == '\t') {
+      float tabWidth = text->fontSize * 4;
+      auto tabGlyph = CreateTabGlyph(text, primaryFont, tabWidth, currentX);
+      currentX += tabGlyph.advance;
+      info.allGlyphs.push_back(std::move(tabGlyph));
+      currentTypeface = nullptr;
+      continue;
+    }
+
+    // Try to find glyph in primary font or fallbacks
+    tgfx::GlyphID glyphID = primaryFont.getGlyphID(unichar);
+    tgfx::Font glyphFont = primaryFont;
+    std::shared_ptr<tgfx::Typeface> glyphTypeface = primaryTypeface;
+
+    if (glyphID == 0) {
+      for (auto& holder : textLayout->fallbackTypefaces) {
+        auto fallback = holder.getTypeface();
+        if (fallback == nullptr || fallback == primaryTypeface) {
+          continue;
+        }
+        auto it = fallbackFontCache.find(fallback.get());
+        if (it == fallbackFontCache.end()) {
+          tgfx::Font f(fallback, text->fontSize);
+          f.setFauxBold(text->fauxBold);
+          f.setFauxItalic(text->fauxItalic);
+          it = fallbackFontCache.emplace(fallback.get(), std::move(f)).first;
+        }
+        glyphID = it->second.getGlyphID(unichar);
+        if (glyphID != 0) {
+          glyphFont = it->second;
+          glyphTypeface = fallback;
+          break;
+        }
+      }
+    }
+
+    if (glyphID == 0) {
+      continue;
+    }
+
+    float advance = glyphFont.getAdvance(glyphID);
+
+    // Start new run if typeface changed
+    if (currentTypeface != glyphTypeface) {
+      info.runs.emplace_back();
+      currentRun = &info.runs.back();
+      currentRun->font = glyphFont;
+      currentTypeface = glyphTypeface;
+      currentRun->startX = currentX;
+      currentRun->canUseDefaultMode = !hasLetterSpacing;
+      // Reserve using remaining character count estimate (assuming average 2 bytes per char).
+      auto remaining = (content.size() - i + charLen) / 2 + 1;
+      currentRun->glyphIDs.reserve(remaining);
+      currentRun->xPositions.reserve(remaining);
+    }
+
+    currentRun->xPositions.push_back(currentX);
+    currentRun->glyphIDs.push_back(glyphID);
+
+    auto metrics = glyphFont.getMetrics();
+    GlyphInfo gi = {};
+    gi.glyphID = glyphID;
+    gi.font = glyphFont;
+    gi.advance = advance;
+    gi.xPosition = currentX;
+    gi.unichar = unichar;
+    gi.fontSize = text->fontSize;
+    gi.ascent = metrics.ascent;
+    gi.descent = metrics.descent;
+    gi.fontLineHeight = std::max(0.0f, fabsf(metrics.ascent) + metrics.descent + metrics.leading);
+    gi.sourceText = text;
+    info.allGlyphs.push_back(gi);
+
+    currentX += advance + text->letterSpacing;
+  }
+#endif
+
+  // Remove the extra letterSpacing after the last glyph.
+  if (hasLetterSpacing && currentX > 0) {
+    currentX -= text->letterSpacing;
+  }
+  info.totalWidth = currentX;
+}
+
+std::vector<TextLayoutContext::LineInfo> TextLayoutContext::layoutLines(
+    const std::vector<GlyphInfo>& allGlyphs, const TextBox* textBox) {
+  std::vector<LineInfo> lines = {};
+  lines.emplace_back();
+  auto* currentLine = &lines.back();
+  float currentLineWidth = 0;
+  int lastBreakIndex = -1;
+  float boxWidth = textBox->size.width;
+  bool doWrap = textBox->wordWrap && boxWidth > 0;
+  // Tracks the fontLineHeight of the \n that created the current line.
+  // Used as the fallback height for empty lines (e.g. consecutive \n\n).
+  float pendingNewlineFontLineHeight = 0.0f;
+
+  for (size_t i = 0; i < allGlyphs.size(); i++) {
+    auto& glyph = allGlyphs[i];
+
+    if (glyph.unichar == '\n') {
+      FinishLine(currentLine, textBox->lineHeight, pendingNewlineFontLineHeight);
+      lines.emplace_back();
+      currentLine = &lines.back();
+      currentLineWidth = 0;
+      lastBreakIndex = -1;
+      pendingNewlineFontLineHeight = glyph.fontLineHeight;
+      continue;
+    }
+
+    float letterSpacing = (glyph.sourceText != nullptr) ? glyph.sourceText->letterSpacing : 0;
+    float glyphEndX = currentLineWidth + glyph.advance;
+
+    // Auto-wrap check
+    if (doWrap && !currentLine->glyphs.empty() && glyphEndX > boxWidth) {
+      if (lastBreakIndex >= 0) {
+        // Split at break point: move glyphs after lastBreakIndex to new line
+        std::vector<GlyphInfo> overflow(currentLine->glyphs.begin() + lastBreakIndex + 1,
+                                        currentLine->glyphs.end());
+        currentLine->glyphs.resize(lastBreakIndex + 1);
+        // Trim trailing whitespace from current line
+        while (!currentLine->glyphs.empty() &&
+               LineBreaker::IsWhitespace(currentLine->glyphs.back().unichar)) {
+          currentLine->glyphs.pop_back();
+        }
+        FinishLine(currentLine, textBox->lineHeight, 0.0f);
         lines.emplace_back();
         currentLine = &lines.back();
+        // Skip leading whitespace in overflow
+        size_t skipCount = 0;
+        while (skipCount < overflow.size() &&
+               LineBreaker::IsWhitespace(overflow[skipCount].unichar)) {
+          skipCount++;
+        }
+        // Recalculate positions for overflow glyphs
         currentLineWidth = 0;
+        for (size_t j = skipCount; j < overflow.size(); j++) {
+          overflow[j].xPosition = currentLineWidth;
+          float ls =
+              (overflow[j].sourceText != nullptr) ? overflow[j].sourceText->letterSpacing : 0;
+          currentLineWidth += overflow[j].advance + ls;
+          currentLine->glyphs.push_back(overflow[j]);
+        }
+        // Add current glyph
+        GlyphInfo adjusted = glyph;
+        adjusted.xPosition = currentLineWidth;
+        currentLineWidth += glyph.advance + letterSpacing;
+        currentLine->glyphs.push_back(adjusted);
+        // Re-scan break opportunities among glyphs on the new line.
         lastBreakIndex = -1;
-        pendingNewlineFontLineHeight = glyph.fontLineHeight;
-        continue;
-      }
-
-      float letterSpacing = (glyph.sourceText != nullptr) ? glyph.sourceText->letterSpacing : 0;
-      float glyphEndX = currentLineWidth + glyph.advance;
-
-      // Auto-wrap check
-      if (doWrap && !currentLine->glyphs.empty() && glyphEndX > boxWidth) {
-        if (lastBreakIndex >= 0) {
-          // Split at break point: move glyphs after lastBreakIndex to new line
-          std::vector<GlyphInfo> overflow(currentLine->glyphs.begin() + lastBreakIndex + 1,
-                                          currentLine->glyphs.end());
-          currentLine->glyphs.resize(lastBreakIndex + 1);
-          // Trim trailing whitespace from current line
-          while (!currentLine->glyphs.empty() &&
-                 LineBreaker::IsWhitespace(currentLine->glyphs.back().unichar)) {
-            currentLine->glyphs.pop_back();
+        for (size_t j = 0; j + 1 < currentLine->glyphs.size(); j++) {
+          auto& prev = currentLine->glyphs[j];
+          auto& next = currentLine->glyphs[j + 1];
+#ifdef PAG_USE_HARFBUZZ
+          bool sameCluster =
+              (prev.cluster != 0 || next.cluster != 0) && prev.cluster == next.cluster;
+          if (!sameCluster && LineBreaker::CanBreakBetween(prev.unichar, next.unichar)) {
+            lastBreakIndex = static_cast<int>(j);
           }
+#else
+          if (LineBreaker::CanBreakBetween(prev.unichar, next.unichar)) {
+            lastBreakIndex = static_cast<int>(j);
+          }
+#endif
+        }
+        // Also check break between the last glyph and the next unprocessed glyph.
+        if (i + 1 < allGlyphs.size() && allGlyphs[i + 1].unichar != '\n') {
+#ifdef PAG_USE_HARFBUZZ
+          bool sameCluster = (glyph.cluster != 0 || allGlyphs[i + 1].cluster != 0) &&
+                             glyph.cluster == allGlyphs[i + 1].cluster;
+          if (!sameCluster &&
+              LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
+            lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
+          }
+#else
+          if (LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
+            lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
+          }
+#endif
+        }
+        continue;
+      } else {
+        // No break point found - force break before current glyph
+        if (!currentLine->glyphs.empty()) {
           FinishLine(currentLine, textBox->lineHeight, 0.0f);
           lines.emplace_back();
           currentLine = &lines.back();
-          // Skip leading whitespace in overflow
-          size_t skipCount = 0;
-          while (skipCount < overflow.size() &&
-                 LineBreaker::IsWhitespace(overflow[skipCount].unichar)) {
-            skipCount++;
-          }
-          // Recalculate positions for overflow glyphs
-          currentLineWidth = 0;
-          for (size_t j = skipCount; j < overflow.size(); j++) {
-            overflow[j].xPosition = currentLineWidth;
-            float ls =
-                (overflow[j].sourceText != nullptr) ? overflow[j].sourceText->letterSpacing : 0;
-            currentLineWidth += overflow[j].advance + ls;
-            currentLine->glyphs.push_back(overflow[j]);
-          }
-          // Add current glyph
-          GlyphInfo adjusted = glyph;
-          adjusted.xPosition = currentLineWidth;
-          currentLineWidth += glyph.advance + letterSpacing;
-          currentLine->glyphs.push_back(adjusted);
-          // Re-scan break opportunities among glyphs on the new line.
-          lastBreakIndex = -1;
-          for (size_t j = 0; j + 1 < currentLine->glyphs.size(); j++) {
-            auto& prev = currentLine->glyphs[j];
-            auto& next = currentLine->glyphs[j + 1];
-#ifdef PAG_USE_HARFBUZZ
-            bool sameCluster =
-                (prev.cluster != 0 || next.cluster != 0) && prev.cluster == next.cluster;
-            if (!sameCluster && LineBreaker::CanBreakBetween(prev.unichar, next.unichar)) {
-              lastBreakIndex = static_cast<int>(j);
-            }
-#else
-            if (LineBreaker::CanBreakBetween(prev.unichar, next.unichar)) {
-              lastBreakIndex = static_cast<int>(j);
-            }
-#endif
-          }
-          // Also check break between the last glyph and the next unprocessed glyph.
-          if (i + 1 < allGlyphs.size() && allGlyphs[i + 1].unichar != '\n') {
-#ifdef PAG_USE_HARFBUZZ
-            bool sameCluster = (glyph.cluster != 0 || allGlyphs[i + 1].cluster != 0) &&
-                               glyph.cluster == allGlyphs[i + 1].cluster;
-            if (!sameCluster &&
-                LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
-              lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
-            }
-#else
-            if (LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
-              lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
-            }
-#endif
-          }
-          continue;
-        } else {
-          // No break point found - force break before current glyph
-          if (!currentLine->glyphs.empty()) {
-            FinishLine(currentLine, textBox->lineHeight, 0.0f);
-            lines.emplace_back();
-            currentLine = &lines.back();
-          }
-          GlyphInfo adjusted = glyph;
-          adjusted.xPosition = 0;
-          currentLine->glyphs.push_back(adjusted);
-          currentLineWidth = glyph.advance + letterSpacing;
         }
-        lastBreakIndex = -1;
-        continue;
+        GlyphInfo adjusted = glyph;
+        adjusted.xPosition = 0;
+        currentLine->glyphs.push_back(adjusted);
+        currentLineWidth = glyph.advance + letterSpacing;
       }
-
-      GlyphInfo adjusted = glyph;
-      adjusted.xPosition = currentLineWidth;
-      currentLine->glyphs.push_back(adjusted);
-      currentLineWidth += glyph.advance + letterSpacing;
-
-      // Update break opportunity
-      if (i + 1 < allGlyphs.size() && allGlyphs[i + 1].unichar != '\n') {
-#ifdef PAG_USE_HARFBUZZ
-        // Cluster-aware breaking: never break within the same HarfBuzz cluster.
-        bool sameCluster = (glyph.cluster != 0 || allGlyphs[i + 1].cluster != 0) &&
-                           glyph.cluster == allGlyphs[i + 1].cluster;
-        if (!sameCluster && LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
-          lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
-        }
-#else
-        if (LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
-          lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
-        }
-#endif
-      }
+      lastBreakIndex = -1;
+      continue;
     }
 
-    FinishLine(currentLine, textBox->lineHeight, pendingNewlineFontLineHeight);
+    GlyphInfo adjusted = glyph;
+    adjusted.xPosition = currentLineWidth;
+    currentLine->glyphs.push_back(adjusted);
+    currentLineWidth += glyph.advance + letterSpacing;
 
-#ifdef PAG_BUILD_PAGX
-    // Apply punctuation squash to all lines.
-    ApplyPunctuationSquashToLines(lines);
+    // Update break opportunity
+    if (i + 1 < allGlyphs.size() && allGlyphs[i + 1].unichar != '\n') {
+#ifdef PAG_USE_HARFBUZZ
+      // Cluster-aware breaking: never break within the same HarfBuzz cluster.
+      bool sameCluster = (glyph.cluster != 0 || allGlyphs[i + 1].cluster != 0) &&
+                         glyph.cluster == allGlyphs[i + 1].cluster;
+      if (!sameCluster && LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
+        lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
+      }
+#else
+      if (LineBreaker::CanBreakBetween(glyph.unichar, allGlyphs[i + 1].unichar)) {
+        lastBreakIndex = static_cast<int>(currentLine->glyphs.size()) - 1;
+      }
 #endif
-
-    return lines;
+    }
   }
 
+  FinishLine(currentLine, textBox->lineHeight, pendingNewlineFontLineHeight);
+
 #ifdef PAG_BUILD_PAGX
-  static void ApplyPunctuationSquashToLines(std::vector<LineInfo>& lines) {
-    for (auto& line : lines) {
-      if (line.glyphs.empty()) {
-        continue;
-      }
-
-      auto glyphCount = line.glyphs.size();
-      // Leading squash removes whitespace before the glyph face (Opening punctuation).
-      // Trailing squash removes whitespace after the glyph face (Closing punctuation).
-      std::vector<float> leadingSquash(glyphCount, 0);
-      std::vector<float> trailingSquash(glyphCount, 0);
-
-      // Line-start squash: remove leading whitespace of the first non-whitespace glyph.
-      // Only Opening punctuation has leading whitespace.
-      for (size_t i = 0; i < glyphCount; i++) {
-        if (LineBreaker::IsWhitespace(line.glyphs[i].unichar)) {
-          continue;
-        }
-        float fraction = PunctuationSquash::GetLineStartSquash(line.glyphs[i].unichar);
-        leadingSquash[i] = line.glyphs[i].advance * fraction;
-        break;
-      }
-
-      // Line-end squash: remove trailing whitespace of the last non-whitespace glyph.
-      // Only Closing punctuation has trailing whitespace.
-      for (int i = static_cast<int>(glyphCount) - 1; i >= 0; i--) {
-        if (LineBreaker::IsWhitespace(line.glyphs[i].unichar)) {
-          continue;
-        }
-        float fraction = PunctuationSquash::GetLineEndSquash(line.glyphs[i].unichar);
-        trailingSquash[i] = line.glyphs[i].advance * fraction;
-        break;
-      }
-
-      // Adjacent punctuation squash. The squash type depends on where each character's internal
-      // whitespace is:
-      //   - Opening punctuation: whitespace on the leading (left) side
-      //   - Closing punctuation: whitespace on the trailing (right) side
-      //   - MiddleDot: whitespace on both sides
-      // prevSquash removes the trailing whitespace of prevChar.
-      // nextSquash removes the leading whitespace of nextChar.
-      for (size_t i = 0; i + 1 < glyphCount; i++) {
-        auto result = PunctuationSquash::GetAdjacentSquash(line.glyphs[i].unichar,
-                                                           line.glyphs[i + 1].unichar);
-        if (result.prevSquash > 0) {
-          float amount = line.glyphs[i].advance * result.prevSquash;
-          // Both Opening (leading whitespace mapped to trailing squash) and Closing/MiddleDot
-          // (trailing whitespace) reduce the effective advance via trailingSquash.
-          if (amount > trailingSquash[i]) {
-            trailingSquash[i] = amount;
-          }
-        }
-        if (result.nextSquash > 0) {
-          float amount = line.glyphs[i + 1].advance * result.nextSquash;
-          // All categories (Opening, Closing, MiddleDot) remove leading whitespace of nextChar.
-          if (amount > leadingSquash[i + 1]) {
-            leadingSquash[i + 1] = amount;
-          }
-        }
-      }
-
-      // Recalculate positions with squash applied.
-      // Leading squash shifts the glyph's xPosition backward (removes space before the glyph).
-      // Trailing squash reduces the effective advance (removes space after the glyph).
-      float xPos = 0;
-      for (size_t i = 0; i < glyphCount; i++) {
-        line.glyphs[i].xPosition = xPos - leadingSquash[i];
-        float effectiveAdvance = line.glyphs[i].advance - leadingSquash[i] - trailingSquash[i];
-        float ls =
-            (line.glyphs[i].sourceText != nullptr) ? line.glyphs[i].sourceText->letterSpacing : 0;
-        xPos += effectiveAdvance + ls;
-      }
-
-      // Recalculate line width.
-      if (!line.glyphs.empty()) {
-        auto& lastGlyph = line.glyphs.back();
-        float lastEffectiveAdvance =
-            lastGlyph.advance - leadingSquash[glyphCount - 1] - trailingSquash[glyphCount - 1];
-        line.width = lastGlyph.xPosition + leadingSquash[glyphCount - 1] + lastEffectiveAdvance;
-      }
-    }
-  }
+  // Apply punctuation squash to all lines.
+  ApplyPunctuationSquashToLines(lines);
 #endif
 
-  static void FinishLine(LineInfo* line, float lineHeight, float newlineFontLineHeight) {
-    if (line->glyphs.empty()) {
-      // Empty line from line breaks: use the newline font metrics for height.
-      if (lineHeight > 0) {
-        line->maxLineHeight = lineHeight;
-        line->roundingRatio = 1.0f;
-      } else if (newlineFontLineHeight > 0) {
-        line->maxLineHeight = roundf(newlineFontLineHeight);
-        line->roundingRatio = line->maxLineHeight / newlineFontLineHeight;
-      }
-      return;
+  return lines;
+}
+
+#ifdef PAG_BUILD_PAGX
+void TextLayoutContext::ApplyPunctuationSquashToLines(std::vector<LineInfo>& lines) {
+  for (auto& line : lines) {
+    if (line.glyphs.empty()) {
+      continue;
     }
-    auto& lastGlyph = line->glyphs.back();
-    line->width = lastGlyph.xPosition + lastGlyph.advance;
-    float maxAscent = 0;
-    float maxDescent = 0;
-    float maxFontLineHeight = 0;
-    for (auto& g : line->glyphs) {
-      float absAscent = fabsf(g.ascent);
-      if (absAscent > maxAscent) {
-        maxAscent = absAscent;
+
+    auto glyphCount = line.glyphs.size();
+    // Leading squash removes whitespace before the glyph face (Opening punctuation).
+    // Trailing squash removes whitespace after the glyph face (Closing punctuation).
+    std::vector<float> leadingSquash(glyphCount, 0);
+    std::vector<float> trailingSquash(glyphCount, 0);
+
+    // Line-start squash: remove leading whitespace of the first non-whitespace glyph.
+    // Only Opening punctuation has leading whitespace.
+    for (size_t i = 0; i < glyphCount; i++) {
+      if (LineBreaker::IsWhitespace(line.glyphs[i].unichar)) {
+        continue;
       }
-      if (g.descent > maxDescent) {
-        maxDescent = g.descent;
+      float fraction = PunctuationSquash::GetLineStartSquash(line.glyphs[i].unichar);
+      leadingSquash[i] = line.glyphs[i].advance * fraction;
+      break;
+    }
+
+    // Line-end squash: remove trailing whitespace of the last non-whitespace glyph.
+    // Only Closing punctuation has trailing whitespace.
+    for (int i = static_cast<int>(glyphCount) - 1; i >= 0; i--) {
+      if (LineBreaker::IsWhitespace(line.glyphs[i].unichar)) {
+        continue;
       }
-      if (g.fontLineHeight > maxFontLineHeight) {
-        maxFontLineHeight = g.fontLineHeight;
+      float fraction = PunctuationSquash::GetLineEndSquash(line.glyphs[i].unichar);
+      trailingSquash[i] = line.glyphs[i].advance * fraction;
+      break;
+    }
+
+    // Adjacent punctuation squash. The squash type depends on where each character's internal
+    // whitespace is:
+    //   - Opening punctuation: whitespace on the leading (left) side
+    //   - Closing punctuation: whitespace on the trailing (right) side
+    //   - MiddleDot: whitespace on both sides
+    // prevSquash removes the trailing whitespace of prevChar.
+    // nextSquash removes the leading whitespace of nextChar.
+    for (size_t i = 0; i + 1 < glyphCount; i++) {
+      auto result =
+          PunctuationSquash::GetAdjacentSquash(line.glyphs[i].unichar, line.glyphs[i + 1].unichar);
+      if (result.prevSquash > 0) {
+        float amount = line.glyphs[i].advance * result.prevSquash;
+        // Both Opening (leading whitespace mapped to trailing squash) and Closing/MiddleDot
+        // (trailing whitespace) reduce the effective advance via trailingSquash.
+        if (amount > trailingSquash[i]) {
+          trailingSquash[i] = amount;
+        }
+      }
+      if (result.nextSquash > 0) {
+        float amount = line.glyphs[i + 1].advance * result.nextSquash;
+        // All categories (Opening, Closing, MiddleDot) remove leading whitespace of nextChar.
+        if (amount > leadingSquash[i + 1]) {
+          leadingSquash[i + 1] = amount;
+        }
       }
     }
-    line->maxAscent = maxAscent;
-    line->maxDescent = maxDescent;
-    line->metricsHeight = maxFontLineHeight;
+
+    // Recalculate positions with squash applied.
+    // Leading squash shifts the glyph's xPosition backward (removes space before the glyph).
+    // Trailing squash reduces the effective advance (removes space after the glyph).
+    float xPos = 0;
+    for (size_t i = 0; i < glyphCount; i++) {
+      line.glyphs[i].xPosition = xPos - leadingSquash[i];
+      float effectiveAdvance = line.glyphs[i].advance - leadingSquash[i] - trailingSquash[i];
+      float ls =
+          (line.glyphs[i].sourceText != nullptr) ? line.glyphs[i].sourceText->letterSpacing : 0;
+      xPos += effectiveAdvance + ls;
+    }
+
+    // Recalculate line width.
+    if (!line.glyphs.empty()) {
+      auto& lastGlyph = line.glyphs.back();
+      float lastEffectiveAdvance =
+          lastGlyph.advance - leadingSquash[glyphCount - 1] - trailingSquash[glyphCount - 1];
+      line.width = lastGlyph.xPosition + leadingSquash[glyphCount - 1] + lastEffectiveAdvance;
+    }
+  }
+}
+#endif
+
+void TextLayoutContext::FinishLine(LineInfo* line, float lineHeight, float newlineFontLineHeight) {
+  if (line->glyphs.empty()) {
+    // Empty line from line breaks: use the newline font metrics for height.
     if (lineHeight > 0) {
       line->maxLineHeight = lineHeight;
       line->roundingRatio = 1.0f;
-    } else if (line->metricsHeight > 0) {
-      line->maxLineHeight = roundf(line->metricsHeight);
-      line->roundingRatio = line->maxLineHeight / line->metricsHeight;
+    } else if (newlineFontLineHeight > 0) {
+      line->maxLineHeight = roundf(newlineFontLineHeight);
+      line->roundingRatio = line->maxLineHeight / newlineFontLineHeight;
+    }
+    return;
+  }
+  auto& lastGlyph = line->glyphs.back();
+  line->width = lastGlyph.xPosition + lastGlyph.advance;
+  float maxAscent = 0;
+  float maxDescent = 0;
+  float maxFontLineHeight = 0;
+  for (auto& g : line->glyphs) {
+    float absAscent = fabsf(g.ascent);
+    if (absAscent > maxAscent) {
+      maxAscent = absAscent;
+    }
+    if (g.descent > maxDescent) {
+      maxDescent = g.descent;
+    }
+    if (g.fontLineHeight > maxFontLineHeight) {
+      maxFontLineHeight = g.fontLineHeight;
+    }
+  }
+  line->maxAscent = maxAscent;
+  line->maxDescent = maxDescent;
+  line->metricsHeight = maxFontLineHeight;
+  if (lineHeight > 0) {
+    line->maxLineHeight = lineHeight;
+    line->roundingRatio = 1.0f;
+  } else if (line->metricsHeight > 0) {
+    line->maxLineHeight = roundf(line->metricsHeight);
+    line->roundingRatio = line->maxLineHeight / line->metricsHeight;
+  }
+}
+
+void TextLayoutContext::buildTextBlobWithLayout(const TextBox* textBox,
+                                                const std::vector<LineInfo>& lines,
+                                                bool paragraphRTL) {
+  if (lines.empty()) {
+    return;
+  }
+
+  float boxWidth = textBox->size.width;
+  float boxHeight = textBox->size.height;
+
+  // Calculate total height using line-box model: each line contributes its full lineHeight.
+  float totalHeight = 0;
+  for (size_t i = 0; i < lines.size(); i++) {
+    totalHeight += lines[i].maxLineHeight;
+  }
+
+  // Vertical alignment offset.
+  float yOffset = 0;
+  if (boxHeight > 0) {
+    switch (textBox->paragraphAlign) {
+      case ParagraphAlign::Near:
+        yOffset = 0;
+        break;
+      case ParagraphAlign::Middle:
+        yOffset = (boxHeight - totalHeight) / 2;
+        break;
+      case ParagraphAlign::Far:
+        yOffset = boxHeight - totalHeight;
+        break;
+    }
+  } else {
+    switch (textBox->paragraphAlign) {
+      case ParagraphAlign::Near:
+        yOffset = 0;
+        break;
+      case ParagraphAlign::Middle:
+        yOffset = -totalHeight / 2;
+        break;
+      case ParagraphAlign::Far:
+        yOffset = -totalHeight;
+        break;
     }
   }
 
-  void buildTextBlobWithLayout(const TextBox* textBox, const std::vector<LineInfo>& lines,
-                               bool paragraphRTL = false) {
-    if (lines.empty()) {
-      return;
+  // Collect positioned glyphs grouped by source Text element.
+  struct PositionedGlyph {
+    tgfx::GlyphID glyphID = 0;
+    tgfx::Font font = {};
+    float x = 0;
+    float y = 0;
+  };
+  std::unordered_map<Text*, std::vector<PositionedGlyph>> textGlyphs = {};
+
+  bool overflowHidden = textBox->overflow == Overflow::Hidden;
+  float boxBottom = textBox->position.y + boxHeight;
+  // Use relative coordinates for baseline calculation, then add textBox position at the end.
+  float relativeTop = 0;
+  float baselineY = 0;
+  // Track the previous line's relative baseline for the equal-spacing model used by subsequent
+  // lines with fixed line height: baseline(n) = baseline(n-1) + lineHeight(n-1).
+  float prevRelativeBaseline = 0;
+  bool hasPrevBaseline = false;
+
+  // For Bottom and Center alignment, pre-compute baselines from the last line upward so that the
+  // last line is anchored at the box bottom and preceding lines are spaced by lineHeight. This
+  // ensures correct baseline positions when lines have different heights (mixed font sizes).
+  std::vector<float> precomputedBaselines = {};
+  if ((textBox->paragraphAlign == ParagraphAlign::Far ||
+       textBox->paragraphAlign == ParagraphAlign::Middle) &&
+      lines.size() > 1) {
+    precomputedBaselines.resize(lines.size(), 0);
+    // Start from the last content line.
+    auto lastIdx = lines.size() - 1;
+    auto& lastLine = lines[lastIdx];
+    float lastRelBaseline = 0;
+    if (!lastLine.glyphs.empty()) {
+      float halfLeading = (lastLine.maxLineHeight - lastLine.metricsHeight) / 2;
+      lastRelBaseline = (totalHeight - lastLine.maxLineHeight + halfLeading + lastLine.maxAscent) *
+                        lastLine.roundingRatio;
+    } else {
+      lastRelBaseline =
+          (totalHeight - lastLine.maxLineHeight + lastLine.maxLineHeight) * lastLine.roundingRatio;
+    }
+    precomputedBaselines[lastIdx] = lastRelBaseline;
+    // Walk upward: each preceding line's baseline = next line's baseline - next line's lineHeight
+    for (int i = static_cast<int>(lastIdx) - 1; i >= 0; i--) {
+      precomputedBaselines[i] = precomputedBaselines[i + 1] - lines[i + 1].maxLineHeight;
+    }
+  }
+
+  for (size_t lineIdx = 0; lineIdx < lines.size(); lineIdx++) {
+    auto& line = lines[lineIdx];
+    float relativeBaseline = 0;
+
+    if (line.glyphs.empty()) {
+      relativeBaseline = (relativeTop + line.maxLineHeight) * line.roundingRatio;
+      baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
+    } else if (!precomputedBaselines.empty()) {
+      // Bottom/Center alignment: use pre-computed baselines anchored from the last line.
+      relativeBaseline = precomputedBaselines[lineIdx];
+      baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
+    } else if (hasPrevBaseline && textBox->lineHeight > 0) {
+      // Fixed line height, subsequent lines: baseline = prevBaseline + lineHeight.
+      // This produces equal baseline-to-baseline spacing matching Figma's behavior where
+      // subsequent lines have their leading added above rather than split above and below.
+      relativeBaseline = prevRelativeBaseline + lines[lineIdx - 1].maxLineHeight;
+      baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
+    } else {
+      // Auto line height or first content line: use half-leading model.
+      float halfLeading = (line.maxLineHeight - line.metricsHeight) / 2;
+      relativeBaseline = (relativeTop + halfLeading + line.maxAscent) * line.roundingRatio;
+      baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
+    }
+    prevRelativeBaseline = relativeBaseline;
+    hasPrevBaseline = !line.glyphs.empty();
+    relativeTop += line.maxLineHeight;
+
+    // Skip lines that overflow below the box bottom.
+    if (overflowHidden && boxHeight > 0) {
+      float lineBottom = baselineY + line.maxDescent;
+      if (lineBottom > boxBottom) {
+        break;
+      }
     }
 
-    float boxWidth = textBox->size.width;
-    float boxHeight = textBox->size.height;
-
-    // Calculate total height using line-box model: each line contributes its full lineHeight.
-    float totalHeight = 0;
-    for (size_t i = 0; i < lines.size(); i++) {
-      totalHeight += lines[i].maxLineHeight;
-    }
-
-    // Vertical alignment offset.
-    float yOffset = 0;
-    if (boxHeight > 0) {
-      switch (textBox->paragraphAlign) {
-        case ParagraphAlign::Near:
-          yOffset = 0;
-          break;
-        case ParagraphAlign::Middle:
-          yOffset = (boxHeight - totalHeight) / 2;
-          break;
-        case ParagraphAlign::Far:
-          yOffset = boxHeight - totalHeight;
-          break;
+    // Horizontal alignment. In RTL paragraphs, Start means right-aligned and End means
+    // left-aligned.
+    float xOffset = textBox->position.x;
+    float justifyExtraPerGap = 0;
+    bool isStartAligned = (textBox->textAlign == TextAlign::Start && !paragraphRTL) ||
+                          (textBox->textAlign == TextAlign::End && paragraphRTL);
+    bool isEndAligned = (textBox->textAlign == TextAlign::End && !paragraphRTL) ||
+                        (textBox->textAlign == TextAlign::Start && paragraphRTL);
+    if (boxWidth > 0) {
+      if (isStartAligned) {
+        // Left-aligned (LTR Start or RTL End): no offset.
+      } else if (textBox->textAlign == TextAlign::Center) {
+        xOffset += (boxWidth - line.width) / 2;
+      } else if (isEndAligned) {
+        xOffset += boxWidth - line.width;
+      } else if (textBox->textAlign == TextAlign::Justify) {
+        // Justify: distribute extra space at word boundaries. Last line uses Start alignment.
+        // Note: under PAG_BUILD_PAGX, gap counting is deferred until after L2 BiDi reorder
+        // so that it operates on the same visual glyph order used during gap application.
+        if (lineIdx < lines.size() - 1 && line.glyphs.size() > 1) {
+#ifndef PAG_BUILD_PAGX
+          int gapCount = 0;
+          for (size_t i = 0; i + 1 < line.glyphs.size(); i++) {
+            if (LineBreaker::CanBreakBetween(line.glyphs[i].unichar, line.glyphs[i + 1].unichar)) {
+              gapCount++;
+            }
+          }
+          if (gapCount > 0) {
+            justifyExtraPerGap = (boxWidth - line.width) / static_cast<float>(gapCount);
+          }
+#endif
+        } else if (paragraphRTL) {
+          xOffset += boxWidth - line.width;
+        }
       }
     } else {
-      switch (textBox->paragraphAlign) {
-        case ParagraphAlign::Near:
-          yOffset = 0;
-          break;
-        case ParagraphAlign::Middle:
-          yOffset = -totalHeight / 2;
-          break;
-        case ParagraphAlign::Far:
-          yOffset = -totalHeight;
-          break;
+      if (isStartAligned) {
+        // No offset.
+      } else if (textBox->textAlign == TextAlign::Center) {
+        xOffset -= line.width / 2;
+      } else if (isEndAligned) {
+        xOffset -= line.width;
       }
     }
 
-    // Collect positioned glyphs grouped by source Text element.
-    struct PositionedGlyph {
-      tgfx::GlyphID glyphID = 0;
-      tgfx::Font font = {};
-      float x = 0;
-      float y = 0;
-    };
-    std::unordered_map<Text*, std::vector<PositionedGlyph>> textGlyphs = {};
-
-    bool overflowHidden = textBox->overflow == Overflow::Hidden;
-    float boxBottom = textBox->position.y + boxHeight;
-    // Use relative coordinates for baseline calculation, then add textBox position at the end.
-    float relativeTop = 0;
-    float baselineY = 0;
-    // Track the previous line's relative baseline for the equal-spacing model used by subsequent
-    // lines with fixed line height: baseline(n) = baseline(n-1) + lineHeight(n-1).
-    float prevRelativeBaseline = 0;
-    bool hasPrevBaseline = false;
-
-    // For Bottom and Center alignment, pre-compute baselines from the last line upward so that the
-    // last line is anchored at the box bottom and preceding lines are spaced by lineHeight. This
-    // ensures correct baseline positions when lines have different heights (mixed font sizes).
-    std::vector<float> precomputedBaselines = {};
-    if ((textBox->paragraphAlign == ParagraphAlign::Far ||
-         textBox->paragraphAlign == ParagraphAlign::Middle) &&
-        lines.size() > 1) {
-      precomputedBaselines.resize(lines.size(), 0);
-      // Start from the last content line.
-      auto lastIdx = lines.size() - 1;
-      auto& lastLine = lines[lastIdx];
-      float lastRelBaseline = 0;
-      if (!lastLine.glyphs.empty()) {
-        float halfLeading = (lastLine.maxLineHeight - lastLine.metricsHeight) / 2;
-        lastRelBaseline =
-            (totalHeight - lastLine.maxLineHeight + halfLeading + lastLine.maxAscent) *
-            lastLine.roundingRatio;
-      } else {
-        lastRelBaseline = (totalHeight - lastLine.maxLineHeight + lastLine.maxLineHeight) *
-                          lastLine.roundingRatio;
-      }
-      precomputedBaselines[lastIdx] = lastRelBaseline;
-      // Walk upward: each preceding line's baseline = next line's baseline - next line's lineHeight
-      for (int i = static_cast<int>(lastIdx) - 1; i >= 0; i--) {
-        precomputedBaselines[i] = precomputedBaselines[i + 1] - lines[i + 1].maxLineHeight;
-      }
-    }
-
-    for (size_t lineIdx = 0; lineIdx < lines.size(); lineIdx++) {
-      auto& line = lines[lineIdx];
-      float relativeBaseline = 0;
-
-      if (line.glyphs.empty()) {
-        relativeBaseline = (relativeTop + line.maxLineHeight) * line.roundingRatio;
-        baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
-      } else if (!precomputedBaselines.empty()) {
-        // Bottom/Center alignment: use pre-computed baselines anchored from the last line.
-        relativeBaseline = precomputedBaselines[lineIdx];
-        baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
-      } else if (hasPrevBaseline && textBox->lineHeight > 0) {
-        // Fixed line height, subsequent lines: baseline = prevBaseline + lineHeight.
-        // This produces equal baseline-to-baseline spacing matching Figma's behavior where
-        // subsequent lines have their leading added above rather than split above and below.
-        relativeBaseline = prevRelativeBaseline + lines[lineIdx - 1].maxLineHeight;
-        baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
-      } else {
-        // Auto line height or first content line: use half-leading model.
-        float halfLeading = (line.maxLineHeight - line.metricsHeight) / 2;
-        relativeBaseline = (relativeTop + halfLeading + line.maxAscent) * line.roundingRatio;
-        baselineY = textBox->position.y + roundf(relativeBaseline + yOffset);
-      }
-      prevRelativeBaseline = relativeBaseline;
-      hasPrevBaseline = !line.glyphs.empty();
-      relativeTop += line.maxLineHeight;
-
-      // Skip lines that overflow below the box bottom.
-      if (overflowHidden && boxHeight > 0) {
-        float lineBottom = baselineY + line.maxDescent;
-        if (lineBottom > boxBottom) {
-          break;
-        }
-      }
-
-      // Horizontal alignment. In RTL paragraphs, Start means right-aligned and End means
-      // left-aligned.
-      float xOffset = textBox->position.x;
-      float justifyExtraPerGap = 0;
-      bool isStartAligned = (textBox->textAlign == TextAlign::Start && !paragraphRTL) ||
-                            (textBox->textAlign == TextAlign::End && paragraphRTL);
-      bool isEndAligned = (textBox->textAlign == TextAlign::End && !paragraphRTL) ||
-                          (textBox->textAlign == TextAlign::Start && paragraphRTL);
-      if (boxWidth > 0) {
-        if (isStartAligned) {
-          // Left-aligned (LTR Start or RTL End): no offset.
-        } else if (textBox->textAlign == TextAlign::Center) {
-          xOffset += (boxWidth - line.width) / 2;
-        } else if (isEndAligned) {
-          xOffset += boxWidth - line.width;
-        } else if (textBox->textAlign == TextAlign::Justify) {
-          // Justify: distribute extra space at word boundaries. Last line uses Start alignment.
-          // Note: under PAG_BUILD_PAGX, gap counting is deferred until after L2 BiDi reorder
-          // so that it operates on the same visual glyph order used during gap application.
-          if (lineIdx < lines.size() - 1 && line.glyphs.size() > 1) {
-#ifndef PAG_BUILD_PAGX
-            int gapCount = 0;
-            for (size_t i = 0; i + 1 < line.glyphs.size(); i++) {
-              if (LineBreaker::CanBreakBetween(line.glyphs[i].unichar,
-                                               line.glyphs[i + 1].unichar)) {
-                gapCount++;
-              }
-            }
-            if (gapCount > 0) {
-              justifyExtraPerGap = (boxWidth - line.width) / static_cast<float>(gapCount);
-            }
-#endif
-          } else if (paragraphRTL) {
-            xOffset += boxWidth - line.width;
-          }
-        }
-      } else {
-        if (isStartAligned) {
-          // No offset.
-        } else if (textBox->textAlign == TextAlign::Center) {
-          xOffset -= line.width / 2;
-        } else if (isEndAligned) {
-          xOffset -= line.width;
-        }
-      }
-
-      float justifyOffset = 0;
+    float justifyOffset = 0;
 #ifdef PAG_BUILD_PAGX
-      // UAX#9 L2: reorder glyphs from logical order to visual order for rendering.
-      // Reverse contiguous runs of glyphs whose bidi level >= current level, starting from the
-      // maximum level down to 1. After reordering, recalculate xPosition for each glyph.
-      auto visualGlyphs = line.glyphs;
-      {
-        uint8_t maxLevel = 0;
-        for (auto& g : visualGlyphs) {
-          if (g.bidiLevel > maxLevel) {
-            maxLevel = g.bidiLevel;
-          }
+    // UAX#9 L2: reorder glyphs from logical order to visual order for rendering.
+    // Reverse contiguous runs of glyphs whose bidi level >= current level, starting from the
+    // maximum level down to 1. After reordering, recalculate xPosition for each glyph.
+    auto visualGlyphs = line.glyphs;
+    {
+      uint8_t maxLevel = 0;
+      for (auto& g : visualGlyphs) {
+        if (g.bidiLevel > maxLevel) {
+          maxLevel = g.bidiLevel;
         }
-        for (uint8_t level = maxLevel; level > 0; level--) {
-          size_t idx = 0;
-          while (idx < visualGlyphs.size()) {
-            if (visualGlyphs[idx].bidiLevel >= level) {
-              size_t start = idx;
-              while (idx < visualGlyphs.size() && visualGlyphs[idx].bidiLevel >= level) {
-                idx++;
-              }
-              std::reverse(visualGlyphs.begin() + static_cast<ptrdiff_t>(start),
-                           visualGlyphs.begin() + static_cast<ptrdiff_t>(idx));
-            } else {
+      }
+      for (uint8_t level = maxLevel; level > 0; level--) {
+        size_t idx = 0;
+        while (idx < visualGlyphs.size()) {
+          if (visualGlyphs[idx].bidiLevel >= level) {
+            size_t start = idx;
+            while (idx < visualGlyphs.size() && visualGlyphs[idx].bidiLevel >= level) {
               idx++;
             }
+            std::reverse(visualGlyphs.begin() + static_cast<ptrdiff_t>(start),
+                         visualGlyphs.begin() + static_cast<ptrdiff_t>(idx));
+          } else {
+            idx++;
           }
         }
-        // Recalculate xPosition after visual reordering.
-        float xPos = 0;
-        for (auto& g : visualGlyphs) {
-          g.xPosition = xPos;
-          float letterSpacing = (g.sourceText != nullptr) ? g.sourceText->letterSpacing : 0;
-          xPos += g.advance + letterSpacing;
+      }
+      // Recalculate xPosition after visual reordering.
+      float xPos = 0;
+      for (auto& g : visualGlyphs) {
+        g.xPosition = xPos;
+        float letterSpacing = (g.sourceText != nullptr) ? g.sourceText->letterSpacing : 0;
+        xPos += g.advance + letterSpacing;
+      }
+    }
+    // Compute justify gap count on visual-order glyphs so that counting and application use
+    // the same adjacency pairs. This avoids mismatch when BiDi L2 reorder changes neighbors.
+    if (textBox->textAlign == TextAlign::Justify && lineIdx < lines.size() - 1 &&
+        line.glyphs.size() > 1) {
+      int gapCount = 0;
+      for (size_t i = 0; i + 1 < visualGlyphs.size(); i++) {
+        if (LineBreaker::CanBreakBetween(visualGlyphs[i].unichar, visualGlyphs[i + 1].unichar)) {
+          gapCount++;
         }
       }
-      // Compute justify gap count on visual-order glyphs so that counting and application use
-      // the same adjacency pairs. This avoids mismatch when BiDi L2 reorder changes neighbors.
-      if (textBox->textAlign == TextAlign::Justify && lineIdx < lines.size() - 1 &&
-          line.glyphs.size() > 1) {
-        int gapCount = 0;
-        for (size_t i = 0; i + 1 < visualGlyphs.size(); i++) {
-          if (LineBreaker::CanBreakBetween(visualGlyphs[i].unichar, visualGlyphs[i + 1].unichar)) {
-            gapCount++;
-          }
-        }
-        if (gapCount > 0) {
-          justifyExtraPerGap = (boxWidth - line.width) / static_cast<float>(gapCount);
-        }
+      if (gapCount > 0) {
+        justifyExtraPerGap = (boxWidth - line.width) / static_cast<float>(gapCount);
       }
-      for (size_t gi = 0; gi < visualGlyphs.size(); gi++) {
-        auto& g = visualGlyphs[gi];
+    }
+    for (size_t gi = 0; gi < visualGlyphs.size(); gi++) {
+      auto& g = visualGlyphs[gi];
 #else
-      for (size_t gi = 0; gi < line.glyphs.size(); gi++) {
-        auto& g = line.glyphs[gi];
+    for (size_t gi = 0; gi < line.glyphs.size(); gi++) {
+      auto& g = line.glyphs[gi];
 #endif
-        // Skip newline and tab glyphs: they only participate in metrics/spacing, not rendering.
-        if (g.unichar == '\n' || g.unichar == '\t') {
-          continue;
-        }
+      // Skip newline and tab glyphs: they only participate in metrics/spacing, not rendering.
+      if (g.unichar == '\n' || g.unichar == '\t') {
+        continue;
+      }
 #ifdef PAG_BUILD_PAGX
-        if (gi > 0 && LineBreaker::CanBreakBetween(visualGlyphs[gi - 1].unichar, g.unichar)) {
+      if (gi > 0 && LineBreaker::CanBreakBetween(visualGlyphs[gi - 1].unichar, g.unichar)) {
 #else
-        if (gi > 0 && LineBreaker::CanBreakBetween(line.glyphs[gi - 1].unichar, g.unichar)) {
+      if (gi > 0 && LineBreaker::CanBreakBetween(line.glyphs[gi - 1].unichar, g.unichar)) {
 #endif
-          justifyOffset += justifyExtraPerGap;
-        }
-        PositionedGlyph pg = {};
-        pg.glyphID = g.glyphID;
-        pg.font = g.font;
-        pg.x = g.xPosition + xOffset + justifyOffset + g.xOffset;
-        pg.y = baselineY - g.yOffset;
-        textGlyphs[g.sourceText].push_back(pg);
+        justifyOffset += justifyExtraPerGap;
       }
-    }
-
-    // Build TextBlob for each Text element with inverse-transform compensation:
-    // subtract text->position so that LayerBuilder's setPosition(text.position) restores the
-    // correct absolute coordinates.
-    for (auto& [text, glyphs] : textGlyphs) {
-      if (glyphs.empty() || text == nullptr) {
-        continue;
-      }
-
-      float compensateX = text->position.x;
-      float compensateY = text->position.y;
-
-      tgfx::TextBlobBuilder builder = {};
-      // Group consecutive glyphs with the same font into runs.
-      size_t runStart = 0;
-      while (runStart < glyphs.size()) {
-        auto& runFont = glyphs[runStart].font;
-        size_t runEnd = runStart + 1;
-        while (runEnd < glyphs.size() && glyphs[runEnd].font == runFont) {
-          runEnd++;
-        }
-        size_t count = runEnd - runStart;
-        auto& buffer = builder.allocRunPos(runFont, count);
-        auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
-        for (size_t j = 0; j < count; j++) {
-          buffer.glyphs[j] = glyphs[runStart + j].glyphID;
-          positions[j] = tgfx::Point::Make(glyphs[runStart + j].x - compensateX,
-                                           glyphs[runStart + j].y - compensateY);
-        }
-        runStart = runEnd;
-      }
-
-      auto textBlob = builder.build();
-      if (textBlob != nullptr) {
-        ShapedText shapedText = {};
-        shapedText.textBlob = textBlob;
-        storeShapedText(text, std::move(shapedText));
-      }
+      PositionedGlyph pg = {};
+      pg.glyphID = g.glyphID;
+      pg.font = g.font;
+      pg.x = g.xPosition + xOffset + justifyOffset + g.xOffset;
+      pg.y = baselineY - g.yOffset;
+      textGlyphs[g.sourceText].push_back(pg);
     }
   }
 
-  static void RemoveTrailingLetterSpacing(std::vector<VerticalGlyphInfo>& glyphs) {
-    if (glyphs.empty()) {
-      return;
+  // Build TextBlob for each Text element with inverse-transform compensation:
+  // subtract text->position so that LayerBuilder's setPosition(text.position) restores the
+  // correct absolute coordinates.
+  for (auto& [text, glyphs] : textGlyphs) {
+    if (glyphs.empty() || text == nullptr) {
+      continue;
     }
-    auto& lastVG = glyphs.back();
-    if (lastVG.glyphs.empty()) {
-      return;
+
+    float compensateX = text->position.x;
+    float compensateY = text->position.y;
+
+    tgfx::TextBlobBuilder builder = {};
+    // Group consecutive glyphs with the same font into runs.
+    size_t runStart = 0;
+    while (runStart < glyphs.size()) {
+      auto& runFont = glyphs[runStart].font;
+      size_t runEnd = runStart + 1;
+      while (runEnd < glyphs.size() && glyphs[runEnd].font == runFont) {
+        runEnd++;
+      }
+      size_t count = runEnd - runStart;
+      auto& buffer = builder.allocRunPos(runFont, count);
+      auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
+      for (size_t j = 0; j < count; j++) {
+        buffer.glyphs[j] = glyphs[runStart + j].glyphID;
+        positions[j] = tgfx::Point::Make(glyphs[runStart + j].x - compensateX,
+                                         glyphs[runStart + j].y - compensateY);
+      }
+      runStart = runEnd;
     }
-    float ls = (lastVG.glyphs.front().sourceText != nullptr)
-                   ? lastVG.glyphs.front().sourceText->letterSpacing
-                   : 0;
-    if (ls != 0) {
-      lastVG.height -= ls;
+
+    auto textBlob = builder.build();
+    if (textBlob != nullptr) {
+      ShapedText shapedText = {};
+      shapedText.textBlob = textBlob;
+      storeShapedText(text, std::move(shapedText));
     }
   }
+}
 
-  static void FinishColumn(ColumnInfo* column, float lineHeight, float newlineFontLineHeight) {
-    if (column->glyphs.empty()) {
-      if (lineHeight > 0) {
-        column->maxColumnWidth = lineHeight;
-      } else if (newlineFontLineHeight > 0) {
-        column->maxColumnWidth = roundf(newlineFontLineHeight);
-      }
-      return;
-    }
-    float height = 0;
-    float maxFontLineHeight = 0;
-    for (auto& vg : column->glyphs) {
-      height += vg.height;
-      if (!vg.glyphs.empty() && vg.glyphs.front().fontLineHeight > maxFontLineHeight) {
-        maxFontLineHeight = vg.glyphs.front().fontLineHeight;
-      }
-    }
-    column->height = height;
-    // Auto column width uses font metrics height (ascent + descent + leading) to match
-    // horizontal layout behavior where auto lineHeight = metricsHeight. This ensures rotated
-    // Latin glyphs fit within the column width.
-    column->maxColumnWidth = (lineHeight > 0) ? lineHeight : roundf(maxFontLineHeight);
+void TextLayoutContext::RemoveTrailingLetterSpacing(std::vector<VerticalGlyphInfo>& glyphs) {
+  if (glyphs.empty()) {
+    return;
   }
+  auto& lastVG = glyphs.back();
+  if (lastVG.glyphs.empty()) {
+    return;
+  }
+  float ls = (lastVG.glyphs.front().sourceText != nullptr)
+                 ? lastVG.glyphs.front().sourceText->letterSpacing
+                 : 0;
+  if (ls != 0) {
+    lastVG.height -= ls;
+  }
+}
 
-  std::vector<ColumnInfo> layoutColumns(const std::vector<GlyphInfo>& allGlyphs,
-                                        const TextBox* textBox) {
-    // Phase 1: Build VerticalGlyphInfo list with orientation, metrics, and break marks.
-    // Consecutive rotated-group characters are collected into a single VerticalGlyphInfo.
-    std::vector<VerticalGlyphInfo> vgList = {};
-    vgList.reserve(allGlyphs.size());
-    for (size_t i = 0; i < allGlyphs.size(); i++) {
-      auto& glyph = allGlyphs[i];
-      if (glyph.unichar == '\n') {
-        VerticalGlyphInfo vg = {};
-        vg.glyphs.push_back(glyph);
-        vgList.push_back(std::move(vg));
-        continue;
+void TextLayoutContext::FinishColumn(ColumnInfo* column, float lineHeight,
+                                     float newlineFontLineHeight) {
+  if (column->glyphs.empty()) {
+    if (lineHeight > 0) {
+      column->maxColumnWidth = lineHeight;
+    } else if (newlineFontLineHeight > 0) {
+      column->maxColumnWidth = roundf(newlineFontLineHeight);
+    }
+    return;
+  }
+  float height = 0;
+  float maxFontLineHeight = 0;
+  for (auto& vg : column->glyphs) {
+    height += vg.height;
+    if (!vg.glyphs.empty() && vg.glyphs.front().fontLineHeight > maxFontLineHeight) {
+      maxFontLineHeight = vg.glyphs.front().fontLineHeight;
+    }
+  }
+  column->height = height;
+  // Auto column width uses font metrics height (ascent + descent + leading) to match
+  // horizontal layout behavior where auto lineHeight = metricsHeight. This ensures rotated
+  // Latin glyphs fit within the column width.
+  column->maxColumnWidth = (lineHeight > 0) ? lineHeight : roundf(maxFontLineHeight);
+}
+
+std::vector<TextLayoutContext::ColumnInfo> TextLayoutContext::layoutColumns(
+    const std::vector<GlyphInfo>& allGlyphs, const TextBox* textBox) {
+  // Phase 1: Build VerticalGlyphInfo list with orientation, metrics, and break marks.
+  // Consecutive rotated-group characters are collected into a single VerticalGlyphInfo.
+  std::vector<VerticalGlyphInfo> vgList = {};
+  vgList.reserve(allGlyphs.size());
+  for (size_t i = 0; i < allGlyphs.size(); i++) {
+    auto& glyph = allGlyphs[i];
+    if (glyph.unichar == '\n') {
+      VerticalGlyphInfo vg = {};
+      vg.glyphs.push_back(glyph);
+      vgList.push_back(std::move(vg));
+      continue;
+    }
+
+    float letterSpacing = (glyph.sourceText != nullptr) ? glyph.sourceText->letterSpacing : 0;
+    auto orientation = VerticalTextUtils::GetOrientation(glyph.unichar);
+
+    {
+      // Each glyph gets its own VerticalGlyphInfo entry.
+      VerticalGlyphInfo vg = {};
+      vg.glyphs.push_back(glyph);
+      vg.orientation = orientation;
+      if (orientation == VerticalOrientation::Rotated) {
+        // Use horizontal advance from font metrics; HarfBuzz TTB xAdvance may be 0.
+        float hAdvance = glyph.font.getAdvance(glyph.glyphID);
+        vg.height = hAdvance + letterSpacing;
+        vg.width = glyph.fontSize;
+      } else {
+        // For upright characters, use the vertical advance from font metrics.
+        float vertAdvance = glyph.font.getAdvance(glyph.glyphID, true);
+        vg.height = vertAdvance + letterSpacing;
+        vg.width = glyph.fontSize;
       }
 
-      float letterSpacing = (glyph.sourceText != nullptr) ? glyph.sourceText->letterSpacing : 0;
-      auto orientation = VerticalTextUtils::GetOrientation(glyph.unichar);
-
-      {
-        // Each glyph gets its own VerticalGlyphInfo entry.
-        VerticalGlyphInfo vg = {};
-        vg.glyphs.push_back(glyph);
-        vg.orientation = orientation;
-        if (orientation == VerticalOrientation::Rotated) {
-          // Use horizontal advance from font metrics; HarfBuzz TTB xAdvance may be 0.
-          float hAdvance = glyph.font.getAdvance(glyph.glyphID);
-          vg.height = hAdvance + letterSpacing;
-          vg.width = glyph.fontSize;
-        } else {
-          // For upright characters, use the vertical advance from font metrics.
-          float vertAdvance = glyph.font.getAdvance(glyph.glyphID, true);
-          vg.height = vertAdvance + letterSpacing;
-          vg.width = glyph.fontSize;
-        }
-
-        if (i > 0 && allGlyphs[i - 1].unichar != '\n') {
+      if (i > 0 && allGlyphs[i - 1].unichar != '\n') {
 #ifdef PAG_USE_HARFBUZZ
-          bool sameCluster = (glyph.cluster != 0 || allGlyphs[i - 1].cluster != 0) &&
-                             glyph.cluster == allGlyphs[i - 1].cluster;
-          vg.canBreakBefore =
-              !sameCluster && LineBreaker::CanBreakBetween(allGlyphs[i - 1].unichar, glyph.unichar);
+        bool sameCluster = (glyph.cluster != 0 || allGlyphs[i - 1].cluster != 0) &&
+                           glyph.cluster == allGlyphs[i - 1].cluster;
+        vg.canBreakBefore =
+            !sameCluster && LineBreaker::CanBreakBetween(allGlyphs[i - 1].unichar, glyph.unichar);
 #else
-          vg.canBreakBefore = LineBreaker::CanBreakBetween(allGlyphs[i - 1].unichar, glyph.unichar);
+        vg.canBreakBefore = LineBreaker::CanBreakBetween(allGlyphs[i - 1].unichar, glyph.unichar);
 #endif
-        }
-        vgList.push_back(std::move(vg));
       }
+      vgList.push_back(std::move(vg));
+    }
+  }
+
+  // Phase 2: Split into columns using break marks.
+  std::vector<ColumnInfo> columns = {};
+  columns.emplace_back();
+  auto* currentColumn = &columns.back();
+  float currentColumnHeight = 0;
+  float boxHeight = textBox->size.height;
+  bool doWrap = textBox->wordWrap && boxHeight > 0;
+  int lastBreakIndex = -1;
+  // Tracks the fontLineHeight of the \n that created the current column.
+  // Used as the fallback width for empty columns (e.g. consecutive \n\n).
+  float pendingNewlineFontLineHeight = 0.0f;
+
+  for (size_t i = 0; i < vgList.size(); i++) {
+    auto& vg = vgList[i];
+
+    if (vg.glyphs.front().unichar == '\n') {
+      RemoveTrailingLetterSpacing(currentColumn->glyphs);
+      // Trim trailing whitespace from current column.
+      while (!currentColumn->glyphs.empty() &&
+             LineBreaker::IsWhitespace(currentColumn->glyphs.back().glyphs.front().unichar)) {
+        currentColumn->glyphs.pop_back();
+      }
+      FinishColumn(currentColumn, textBox->lineHeight, pendingNewlineFontLineHeight);
+      columns.emplace_back();
+      currentColumn = &columns.back();
+      currentColumnHeight = 0;
+      lastBreakIndex = -1;
+      pendingNewlineFontLineHeight = vg.glyphs.front().fontLineHeight;
+      continue;
     }
 
-    // Phase 2: Split into columns using break marks.
-    std::vector<ColumnInfo> columns = {};
-    columns.emplace_back();
-    auto* currentColumn = &columns.back();
-    float currentColumnHeight = 0;
-    float boxHeight = textBox->size.height;
-    bool doWrap = textBox->wordWrap && boxHeight > 0;
-    int lastBreakIndex = -1;
-    // Tracks the fontLineHeight of the \n that created the current column.
-    // Used as the fallback width for empty columns (e.g. consecutive \n\n).
-    float pendingNewlineFontLineHeight = 0.0f;
+    if (vg.canBreakBefore) {
+      lastBreakIndex = static_cast<int>(currentColumn->glyphs.size());
+    }
 
-    for (size_t i = 0; i < vgList.size(); i++) {
-      auto& vg = vgList[i];
-
-      if (vg.glyphs.front().unichar == '\n') {
+    if (doWrap && !currentColumn->glyphs.empty() && currentColumnHeight + vg.height > boxHeight) {
+      if (lastBreakIndex >= 0) {
+        std::vector<VerticalGlyphInfo> overflow(currentColumn->glyphs.begin() + lastBreakIndex,
+                                                currentColumn->glyphs.end());
+        currentColumn->glyphs.resize(static_cast<size_t>(lastBreakIndex));
         RemoveTrailingLetterSpacing(currentColumn->glyphs);
         // Trim trailing whitespace from current column.
         while (!currentColumn->glyphs.empty() &&
                LineBreaker::IsWhitespace(currentColumn->glyphs.back().glyphs.front().unichar)) {
           currentColumn->glyphs.pop_back();
         }
-        FinishColumn(currentColumn, textBox->lineHeight, pendingNewlineFontLineHeight);
+        FinishColumn(currentColumn, textBox->lineHeight, 0.0f);
+        columns.emplace_back();
+        currentColumn = &columns.back();
+        // Skip leading whitespace in overflow.
+        size_t skipCount = 0;
+        while (skipCount < overflow.size() &&
+               LineBreaker::IsWhitespace(overflow[skipCount].glyphs.front().unichar)) {
+          skipCount++;
+        }
+        for (size_t j = skipCount; j < overflow.size(); j++) {
+          if (j == skipCount) {
+            overflow[j].canBreakBefore = false;
+          }
+          currentColumn->glyphs.push_back(std::move(overflow[j]));
+        }
+        currentColumnHeight = 0;
+        for (auto& g : currentColumn->glyphs) {
+          currentColumnHeight += g.height;
+        }
+        // Re-scan break opportunities among glyphs on the new column.
+        lastBreakIndex = -1;
+        for (size_t j = 1; j < currentColumn->glyphs.size(); j++) {
+          if (currentColumn->glyphs[j].canBreakBefore) {
+            lastBreakIndex = static_cast<int>(j);
+          }
+        }
+      } else {
+        RemoveTrailingLetterSpacing(currentColumn->glyphs);
+        FinishColumn(currentColumn, textBox->lineHeight, 0.0f);
         columns.emplace_back();
         currentColumn = &columns.back();
         currentColumnHeight = 0;
         lastBreakIndex = -1;
-        pendingNewlineFontLineHeight = vg.glyphs.front().fontLineHeight;
-        continue;
       }
-
-      if (vg.canBreakBefore) {
-        lastBreakIndex = static_cast<int>(currentColumn->glyphs.size());
-      }
-
-      if (doWrap && !currentColumn->glyphs.empty() && currentColumnHeight + vg.height > boxHeight) {
-        if (lastBreakIndex >= 0) {
-          std::vector<VerticalGlyphInfo> overflow(currentColumn->glyphs.begin() + lastBreakIndex,
-                                                  currentColumn->glyphs.end());
-          currentColumn->glyphs.resize(static_cast<size_t>(lastBreakIndex));
-          RemoveTrailingLetterSpacing(currentColumn->glyphs);
-          // Trim trailing whitespace from current column.
-          while (!currentColumn->glyphs.empty() &&
-                 LineBreaker::IsWhitespace(currentColumn->glyphs.back().glyphs.front().unichar)) {
-            currentColumn->glyphs.pop_back();
-          }
-          FinishColumn(currentColumn, textBox->lineHeight, 0.0f);
-          columns.emplace_back();
-          currentColumn = &columns.back();
-          // Skip leading whitespace in overflow.
-          size_t skipCount = 0;
-          while (skipCount < overflow.size() &&
-                 LineBreaker::IsWhitespace(overflow[skipCount].glyphs.front().unichar)) {
-            skipCount++;
-          }
-          for (size_t j = skipCount; j < overflow.size(); j++) {
-            if (j == skipCount) {
-              overflow[j].canBreakBefore = false;
-            }
-            currentColumn->glyphs.push_back(std::move(overflow[j]));
-          }
-          currentColumnHeight = 0;
-          for (auto& g : currentColumn->glyphs) {
-            currentColumnHeight += g.height;
-          }
-          // Re-scan break opportunities among glyphs on the new column.
-          lastBreakIndex = -1;
-          for (size_t j = 1; j < currentColumn->glyphs.size(); j++) {
-            if (currentColumn->glyphs[j].canBreakBefore) {
-              lastBreakIndex = static_cast<int>(j);
-            }
-          }
-        } else {
-          RemoveTrailingLetterSpacing(currentColumn->glyphs);
-          FinishColumn(currentColumn, textBox->lineHeight, 0.0f);
-          columns.emplace_back();
-          currentColumn = &columns.back();
-          currentColumnHeight = 0;
-          lastBreakIndex = -1;
-        }
-      }
-
-      if (vg.canBreakBefore) {
-        lastBreakIndex = static_cast<int>(currentColumn->glyphs.size());
-      }
-      currentColumnHeight += vg.height;
-      currentColumn->glyphs.push_back(std::move(vg));
     }
 
-    RemoveTrailingLetterSpacing(currentColumn->glyphs);
+    if (vg.canBreakBefore) {
+      lastBreakIndex = static_cast<int>(currentColumn->glyphs.size());
+    }
+    currentColumnHeight += vg.height;
+    currentColumn->glyphs.push_back(std::move(vg));
+  }
 
-    FinishColumn(currentColumn, textBox->lineHeight, pendingNewlineFontLineHeight);
+  RemoveTrailingLetterSpacing(currentColumn->glyphs);
+
+  FinishColumn(currentColumn, textBox->lineHeight, pendingNewlineFontLineHeight);
 
 #ifdef PAG_BUILD_PAGX
-    // Apply punctuation squash to all columns.
-    ApplyPunctuationSquashToColumns(columns);
+  // Apply punctuation squash to all columns.
+  ApplyPunctuationSquashToColumns(columns);
 #endif
 
-    return columns;
-  }
+  return columns;
+}
 
 #ifdef PAG_BUILD_PAGX
-  static bool IsSquashable(const VerticalGlyphInfo& vg) {
-    return vg.orientation == VerticalOrientation::Upright;
-  }
+bool TextLayoutContext::IsSquashable(const VerticalGlyphInfo& vg) {
+  return vg.orientation == VerticalOrientation::Upright;
+}
 
-  static void ApplyPunctuationSquashToColumns(std::vector<ColumnInfo>& columns) {
-    for (auto& column : columns) {
-      if (column.glyphs.empty()) {
+void TextLayoutContext::ApplyPunctuationSquashToColumns(std::vector<ColumnInfo>& columns) {
+  for (auto& column : columns) {
+    if (column.glyphs.empty()) {
+      continue;
+    }
+
+    auto glyphCount = column.glyphs.size();
+    // In vertical layout, "leading" = top (before glyph face), "trailing" = bottom (after glyph
+    // face). Opening punctuation has leading (top) whitespace, Closing has trailing (bottom).
+    // Only apply squash to upright glyphs. Rotated glyphs have their whitespace axis changed after
+    // rotation, so horizontal punctuation squash rules do not apply.
+    std::vector<float> leadingSquash(glyphCount, 0);
+    std::vector<float> trailingSquash(glyphCount, 0);
+
+    // Column-start squash: remove leading whitespace of the first non-whitespace glyph.
+    for (size_t i = 0; i < glyphCount; i++) {
+      if (LineBreaker::IsWhitespace(column.glyphs[i].glyphs.front().unichar)) {
         continue;
       }
-
-      auto glyphCount = column.glyphs.size();
-      // In vertical layout, "leading" = top (before glyph face), "trailing" = bottom (after glyph
-      // face). Opening punctuation has leading (top) whitespace, Closing has trailing (bottom).
-      // Only apply squash to upright glyphs. Rotated glyphs have their whitespace axis changed after
-      // rotation, so horizontal punctuation squash rules do not apply.
-      std::vector<float> leadingSquash(glyphCount, 0);
-      std::vector<float> trailingSquash(glyphCount, 0);
-
-      // Column-start squash: remove leading whitespace of the first non-whitespace glyph.
-      for (size_t i = 0; i < glyphCount; i++) {
-        if (LineBreaker::IsWhitespace(column.glyphs[i].glyphs.front().unichar)) {
-          continue;
-        }
-        if (!IsSquashable(column.glyphs[i])) {
-          break;
-        }
-        float fraction =
-            PunctuationSquash::GetLineStartSquash(column.glyphs[i].glyphs.front().unichar);
-        leadingSquash[i] = column.glyphs[i].height * fraction;
+      if (!IsSquashable(column.glyphs[i])) {
         break;
       }
-
-      // Column-end squash: remove trailing whitespace of the last non-whitespace glyph.
-      for (int i = static_cast<int>(glyphCount) - 1; i >= 0; i--) {
-        if (LineBreaker::IsWhitespace(column.glyphs[i].glyphs.front().unichar)) {
-          continue;
-        }
-        if (!IsSquashable(column.glyphs[i])) {
-          break;
-        }
-        float fraction =
-            PunctuationSquash::GetLineEndSquash(column.glyphs[i].glyphs.front().unichar);
-        trailingSquash[i] = column.glyphs[i].height * fraction;
-        break;
-      }
-
-      // Adjacent punctuation squash (only between upright glyphs).
-      for (size_t i = 0; i + 1 < glyphCount; i++) {
-        if (!IsSquashable(column.glyphs[i]) || !IsSquashable(column.glyphs[i + 1])) {
-          continue;
-        }
-        auto result = PunctuationSquash::GetAdjacentSquash(
-            column.glyphs[i].glyphs.front().unichar, column.glyphs[i + 1].glyphs.front().unichar);
-        if (result.prevSquash > 0) {
-          float amount = column.glyphs[i].height * result.prevSquash;
-          if (amount > trailingSquash[i]) {
-            trailingSquash[i] = amount;
-          }
-        }
-        if (result.nextSquash > 0) {
-          float amount = column.glyphs[i + 1].height * result.nextSquash;
-          if (amount > leadingSquash[i + 1]) {
-            leadingSquash[i + 1] = amount;
-          }
-        }
-      }
-
-      // Apply squash to glyph heights and record leadingSquash for position adjustment.
-      float totalHeight = 0;
-      for (size_t i = 0; i < glyphCount; i++) {
-        column.glyphs[i].leadingSquash = leadingSquash[i];
-        column.glyphs[i].height -= leadingSquash[i] + trailingSquash[i];
-        totalHeight += column.glyphs[i].height;
-      }
-      column.height = totalHeight;
+      float fraction =
+          PunctuationSquash::GetLineStartSquash(column.glyphs[i].glyphs.front().unichar);
+      leadingSquash[i] = column.glyphs[i].height * fraction;
+      break;
     }
+
+    // Column-end squash: remove trailing whitespace of the last non-whitespace glyph.
+    for (int i = static_cast<int>(glyphCount) - 1; i >= 0; i--) {
+      if (LineBreaker::IsWhitespace(column.glyphs[i].glyphs.front().unichar)) {
+        continue;
+      }
+      if (!IsSquashable(column.glyphs[i])) {
+        break;
+      }
+      float fraction = PunctuationSquash::GetLineEndSquash(column.glyphs[i].glyphs.front().unichar);
+      trailingSquash[i] = column.glyphs[i].height * fraction;
+      break;
+    }
+
+    // Adjacent punctuation squash (only between upright glyphs).
+    for (size_t i = 0; i + 1 < glyphCount; i++) {
+      if (!IsSquashable(column.glyphs[i]) || !IsSquashable(column.glyphs[i + 1])) {
+        continue;
+      }
+      auto result = PunctuationSquash::GetAdjacentSquash(
+          column.glyphs[i].glyphs.front().unichar, column.glyphs[i + 1].glyphs.front().unichar);
+      if (result.prevSquash > 0) {
+        float amount = column.glyphs[i].height * result.prevSquash;
+        if (amount > trailingSquash[i]) {
+          trailingSquash[i] = amount;
+        }
+      }
+      if (result.nextSquash > 0) {
+        float amount = column.glyphs[i + 1].height * result.nextSquash;
+        if (amount > leadingSquash[i + 1]) {
+          leadingSquash[i + 1] = amount;
+        }
+      }
+    }
+
+    // Apply squash to glyph heights and record leadingSquash for position adjustment.
+    float totalHeight = 0;
+    for (size_t i = 0; i < glyphCount; i++) {
+      column.glyphs[i].leadingSquash = leadingSquash[i];
+      column.glyphs[i].height -= leadingSquash[i] + trailingSquash[i];
+      totalHeight += column.glyphs[i].height;
+    }
+    column.height = totalHeight;
   }
+}
 #endif
 
-  void buildTextBlobVertical(const TextBox* textBox, const std::vector<ColumnInfo>& columns) {
-    if (columns.empty()) {
-      return;
+void TextLayoutContext::buildTextBlobVertical(const TextBox* textBox,
+                                              const std::vector<ColumnInfo>& columns) {
+  if (columns.empty()) {
+    return;
+  }
+
+  float boxWidth = textBox->size.width;
+  float boxHeight = textBox->size.height;
+
+  // Calculate total width: all columns use maxColumnWidth (line-box model).
+  float totalWidth = 0;
+  for (size_t i = 0; i < columns.size(); i++) {
+    totalWidth += columns[i].maxColumnWidth;
+  }
+
+  // ParagraphAlign controls the block-flow direction (horizontal in vertical mode).
+  // Columns go right-to-left, so Near = right-aligned, Far = left-aligned.
+  // xStart is where the right edge of the first column starts.
+  float xStart = textBox->position.x;
+  if (boxWidth > 0) {
+    switch (textBox->paragraphAlign) {
+      case ParagraphAlign::Near:
+        xStart += boxWidth;
+        break;
+      case ParagraphAlign::Middle:
+        xStart += (boxWidth + totalWidth) / 2;
+        break;
+      case ParagraphAlign::Far:
+        xStart += totalWidth;
+        break;
+    }
+  } else {
+    // boxWidth is 0: no boundary, align relative to position.
+    switch (textBox->paragraphAlign) {
+      case ParagraphAlign::Near:
+        xStart += totalWidth;
+        break;
+      case ParagraphAlign::Middle:
+        xStart += totalWidth / 2;
+        break;
+      case ParagraphAlign::Far:
+        break;
+    }
+  }
+
+  // Positioned glyph for vertical layout that can use either Point or RSXform.
+  struct VerticalPositionedGlyph {
+    tgfx::GlyphID glyphID = 0;
+    tgfx::Font font = {};
+    bool useRSXform = false;
+    tgfx::Point position = {};
+    tgfx::RSXform xform = {};
+  };
+  std::unordered_map<Text*, std::vector<VerticalPositionedGlyph>> textGlyphs = {};
+
+  bool overflowHidden = textBox->overflow == Overflow::Hidden;
+  float boxLeft = textBox->position.x;
+  float columnX = xStart;
+
+  for (size_t colIdx = 0; colIdx < columns.size(); colIdx++) {
+    auto& column = columns[colIdx];
+    // Move left by this column's allocated width.
+    float allocatedWidth = column.maxColumnWidth;
+    columnX -= allocatedWidth;
+
+    // Skip columns that overflow beyond the left edge of the box.
+    if (overflowHidden && boxWidth > 0 && columnX < boxLeft) {
+      break;
     }
 
-    float boxWidth = textBox->size.width;
-    float boxHeight = textBox->size.height;
+    // Center of this column for centering upright glyphs.
+    float columnCenterX = columnX + allocatedWidth / 2;
 
-    // Calculate total width: all columns use maxColumnWidth (line-box model).
-    float totalWidth = 0;
-    for (size_t i = 0; i < columns.size(); i++) {
-      totalWidth += columns[i].maxColumnWidth;
-    }
-
-    // ParagraphAlign controls the block-flow direction (horizontal in vertical mode).
-    // Columns go right-to-left, so Near = right-aligned, Far = left-aligned.
-    // xStart is where the right edge of the first column starts.
-    float xStart = textBox->position.x;
-    if (boxWidth > 0) {
-      switch (textBox->paragraphAlign) {
-        case ParagraphAlign::Near:
-          xStart += boxWidth;
+    // TextAlign controls the inline direction (vertical in vertical mode).
+    // Compute per-column vertical offset based on TextAlign.
+    float inlineOffset = 0;
+    float justifyGap = 0;
+    if (boxHeight > 0) {
+      switch (textBox->textAlign) {
+        case TextAlign::Start:
           break;
-        case ParagraphAlign::Middle:
-          xStart += (boxWidth + totalWidth) / 2;
+        case TextAlign::Center:
+          inlineOffset = (boxHeight - column.height) / 2;
           break;
-        case ParagraphAlign::Far:
-          xStart += totalWidth;
+        case TextAlign::End:
+          inlineOffset = boxHeight - column.height;
           break;
+        case TextAlign::Justify: {
+          // Justify: distribute extra space evenly at word boundaries. Last column uses Start.
+          if (colIdx < columns.size() - 1) {
+            size_t breakCount = 0;
+            for (size_t gi = 0; gi < column.glyphs.size(); gi++) {
+              if (column.glyphs[gi].canBreakBefore) {
+                breakCount++;
+              }
+            }
+            if (breakCount > 0) {
+              float extraSpace = boxHeight - column.height;
+              justifyGap = extraSpace / static_cast<float>(breakCount);
+            }
+          }
+          break;
+        }
       }
     } else {
-      // boxWidth is 0: no boundary, align relative to position.
-      switch (textBox->paragraphAlign) {
-        case ParagraphAlign::Near:
-          xStart += totalWidth;
+      switch (textBox->textAlign) {
+        case TextAlign::Start:
           break;
-        case ParagraphAlign::Middle:
-          xStart += totalWidth / 2;
+        case TextAlign::Center:
+          inlineOffset = -column.height / 2;
           break;
-        case ParagraphAlign::Far:
+        case TextAlign::End:
+          inlineOffset = -column.height;
+          break;
+        case TextAlign::Justify:
           break;
       }
     }
 
-    // Positioned glyph for vertical layout that can use either Point or RSXform.
-    struct VerticalPositionedGlyph {
-      tgfx::GlyphID glyphID = 0;
-      tgfx::Font font = {};
-      bool useRSXform = false;
-      tgfx::Point position = {};
-      tgfx::RSXform xform = {};
-    };
-    std::unordered_map<Text*, std::vector<VerticalPositionedGlyph>> textGlyphs = {};
+    float currentY = textBox->position.y + inlineOffset;
 
-    bool overflowHidden = textBox->overflow == Overflow::Hidden;
-    float boxLeft = textBox->position.x;
-    float columnX = xStart;
+    for (size_t glyphIdx = 0; glyphIdx < column.glyphs.size(); glyphIdx++) {
+      auto& vg = column.glyphs[glyphIdx];
 
-    for (size_t colIdx = 0; colIdx < columns.size(); colIdx++) {
-      auto& column = columns[colIdx];
-      // Move left by this column's allocated width.
-      float allocatedWidth = column.maxColumnWidth;
-      columnX -= allocatedWidth;
-
-      // Skip columns that overflow beyond the left edge of the box.
-      if (overflowHidden && boxWidth > 0 && columnX < boxLeft) {
-        break;
-      }
-
-      // Center of this column for centering upright glyphs.
-      float columnCenterX = columnX + allocatedWidth / 2;
-
-      // TextAlign controls the inline direction (vertical in vertical mode).
-      // Compute per-column vertical offset based on TextAlign.
-      float inlineOffset = 0;
-      float justifyGap = 0;
-      if (boxHeight > 0) {
-        switch (textBox->textAlign) {
-          case TextAlign::Start:
-            break;
-          case TextAlign::Center:
-            inlineOffset = (boxHeight - column.height) / 2;
-            break;
-          case TextAlign::End:
-            inlineOffset = boxHeight - column.height;
-            break;
-          case TextAlign::Justify: {
-            // Justify: distribute extra space evenly at word boundaries. Last column uses Start.
-            if (colIdx < columns.size() - 1) {
-              size_t breakCount = 0;
-              for (size_t gi = 0; gi < column.glyphs.size(); gi++) {
-                if (column.glyphs[gi].canBreakBefore) {
-                  breakCount++;
-                }
-              }
-              if (breakCount > 0) {
-                float extraSpace = boxHeight - column.height;
-                justifyGap = extraSpace / static_cast<float>(breakCount);
-              }
-            }
-            break;
-          }
-        }
-      } else {
-        switch (textBox->textAlign) {
-          case TextAlign::Start:
-            break;
-          case TextAlign::Center:
-            inlineOffset = -column.height / 2;
-            break;
-          case TextAlign::End:
-            inlineOffset = -column.height;
-            break;
-          case TextAlign::Justify:
-            break;
-        }
-      }
-
-      float currentY = textBox->position.y + inlineOffset;
-
-      for (size_t glyphIdx = 0; glyphIdx < column.glyphs.size(); glyphIdx++) {
-        auto& vg = column.glyphs[glyphIdx];
-
-        // Skip tab glyphs: they only occupy space, not rendered.
-        if (vg.glyphs.front().unichar == '\t') {
-          currentY += vg.height;
-          continue;
-        }
-
-        if (vg.orientation == VerticalOrientation::Rotated) {
-          // Single rotated glyph: rotate 90 degrees CW using RSXform (scos=0, ssin=1).
-          auto& g = vg.glyphs.front();
-          VerticalPositionedGlyph vpg = {};
-          vpg.glyphID = g.glyphID;
-          vpg.font = g.font;
-          vpg.useRSXform = true;
-          float absAscent = fabsf(g.ascent);
-          float tx = columnCenterX - (absAscent - g.descent) / 2;
-          float ty = currentY - vg.leadingSquash;
-          vpg.xform = tgfx::RSXform::Make(0, 1, tx, ty);
-          textGlyphs[g.sourceText].push_back(vpg);
-#ifdef PAG_USE_HARFBUZZ
-        } else {
-          // With HarfBuzz vert shaping, use getVerticalOffset() for all upright glyphs.
-          // If the font has vert/vrt2 features, HarfBuzz already substituted the glyph.
-          auto& g = vg.glyphs.front();
-          VerticalPositionedGlyph vpg = {};
-          vpg.glyphID = g.glyphID;
-          vpg.font = g.font;
-          vpg.useRSXform = false;
-          auto offset = g.font.getVerticalOffset(g.glyphID);
-          float glyphX = columnCenterX + offset.x;
-          float glyphY = currentY - vg.leadingSquash + offset.y;
-          vpg.position = tgfx::Point::Make(glyphX, glyphY);
-          textGlyphs[g.sourceText].push_back(vpg);
-        }
-#else
-        } else if (VerticalTextUtils::NeedsPunctuationOffset(vg.glyphs.front().unichar)) {
-          auto& g = vg.glyphs.front();
-          VerticalPositionedGlyph vpg = {};
-          vpg.glyphID = g.glyphID;
-          vpg.font = g.font;
-          vpg.useRSXform = false;
-          float dx = 0;
-          float dy = 0;
-          VerticalTextUtils::GetPunctuationOffset(g.fontSize, &dx, &dy);
-          float glyphX = columnCenterX - g.advance / 2 + dx;
-          float glyphY = currentY + fabsf(g.ascent) + dy;
-          vpg.position = tgfx::Point::Make(glyphX, glyphY);
-          textGlyphs[g.sourceText].push_back(vpg);
-        } else {
-          auto& g = vg.glyphs.front();
-          VerticalPositionedGlyph vpg = {};
-          vpg.glyphID = g.glyphID;
-          vpg.font = g.font;
-          vpg.useRSXform = false;
-          auto offset = g.font.getVerticalOffset(g.glyphID);
-          float glyphX = columnCenterX + offset.x;
-          float glyphY = currentY + offset.y;
-          vpg.position = tgfx::Point::Make(glyphX, glyphY);
-          textGlyphs[g.sourceText].push_back(vpg);
-        }
-#endif
-
+      // Skip tab glyphs: they only occupy space, not rendered.
+      if (vg.glyphs.front().unichar == '\t') {
         currentY += vg.height;
-        if (justifyGap != 0 && glyphIdx + 1 < column.glyphs.size() &&
-            column.glyphs[glyphIdx + 1].canBreakBefore) {
-          currentY += justifyGap;
-        }
-      }
-    }
-
-    // Build TextBlob for each Text element with inverse-transform compensation.
-    for (auto& [text, glyphs] : textGlyphs) {
-      if (glyphs.empty() || text == nullptr) {
         continue;
       }
 
-      float compensateX = text->position.x;
-      float compensateY = text->position.y;
-
-      tgfx::TextBlobBuilder builder = {};
-
-      // Separate into Point-positioned and RSXform-positioned runs.
-      // We need to batch consecutive glyphs of the same font and positioning mode.
-      size_t runStart = 0;
-      while (runStart < glyphs.size()) {
-        auto& runFont = glyphs[runStart].font;
-        bool runUseRSXform = glyphs[runStart].useRSXform;
-        size_t runEnd = runStart + 1;
-        while (runEnd < glyphs.size() && glyphs[runEnd].font == runFont &&
-               glyphs[runEnd].useRSXform == runUseRSXform) {
-          runEnd++;
-        }
-        size_t count = runEnd - runStart;
-
-        if (runUseRSXform) {
-          auto& buffer = builder.allocRunRSXform(runFont, count);
-          auto* xforms = reinterpret_cast<tgfx::RSXform*>(buffer.positions);
-          for (size_t j = 0; j < count; j++) {
-            buffer.glyphs[j] = glyphs[runStart + j].glyphID;
-            auto xform = glyphs[runStart + j].xform;
-            xform.tx -= compensateX;
-            xform.ty -= compensateY;
-            xforms[j] = xform;
-          }
-        } else {
-          auto& buffer = builder.allocRunPos(runFont, count);
-          auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
-          for (size_t j = 0; j < count; j++) {
-            buffer.glyphs[j] = glyphs[runStart + j].glyphID;
-            positions[j] = tgfx::Point::Make(glyphs[runStart + j].position.x - compensateX,
-                                             glyphs[runStart + j].position.y - compensateY);
-          }
-        }
-        runStart = runEnd;
+      if (vg.orientation == VerticalOrientation::Rotated) {
+        // Single rotated glyph: rotate 90 degrees CW using RSXform (scos=0, ssin=1).
+        auto& g = vg.glyphs.front();
+        VerticalPositionedGlyph vpg = {};
+        vpg.glyphID = g.glyphID;
+        vpg.font = g.font;
+        vpg.useRSXform = true;
+        float absAscent = fabsf(g.ascent);
+        float tx = columnCenterX - (absAscent - g.descent) / 2;
+        float ty = currentY - vg.leadingSquash;
+        vpg.xform = tgfx::RSXform::Make(0, 1, tx, ty);
+        textGlyphs[g.sourceText].push_back(vpg);
+#ifdef PAG_USE_HARFBUZZ
+      } else {
+        // With HarfBuzz vert shaping, use getVerticalOffset() for all upright glyphs.
+        // If the font has vert/vrt2 features, HarfBuzz already substituted the glyph.
+        auto& g = vg.glyphs.front();
+        VerticalPositionedGlyph vpg = {};
+        vpg.glyphID = g.glyphID;
+        vpg.font = g.font;
+        vpg.useRSXform = false;
+        auto offset = g.font.getVerticalOffset(g.glyphID);
+        float glyphX = columnCenterX + offset.x;
+        float glyphY = currentY - vg.leadingSquash + offset.y;
+        vpg.position = tgfx::Point::Make(glyphX, glyphY);
+        textGlyphs[g.sourceText].push_back(vpg);
       }
+#else
+      } else if (VerticalTextUtils::NeedsPunctuationOffset(vg.glyphs.front().unichar)) {
+        auto& g = vg.glyphs.front();
+        VerticalPositionedGlyph vpg = {};
+        vpg.glyphID = g.glyphID;
+        vpg.font = g.font;
+        vpg.useRSXform = false;
+        float dx = 0;
+        float dy = 0;
+        VerticalTextUtils::GetPunctuationOffset(g.fontSize, &dx, &dy);
+        float glyphX = columnCenterX - g.advance / 2 + dx;
+        float glyphY = currentY + fabsf(g.ascent) + dy;
+        vpg.position = tgfx::Point::Make(glyphX, glyphY);
+        textGlyphs[g.sourceText].push_back(vpg);
+      } else {
+        auto& g = vg.glyphs.front();
+        VerticalPositionedGlyph vpg = {};
+        vpg.glyphID = g.glyphID;
+        vpg.font = g.font;
+        vpg.useRSXform = false;
+        auto offset = g.font.getVerticalOffset(g.glyphID);
+        float glyphX = columnCenterX + offset.x;
+        float glyphY = currentY + offset.y;
+        vpg.position = tgfx::Point::Make(glyphX, glyphY);
+        textGlyphs[g.sourceText].push_back(vpg);
+      }
+#endif
 
-      auto textBlob = builder.build();
-      if (textBlob != nullptr) {
-        ShapedText shapedText = {};
-        shapedText.textBlob = textBlob;
-        storeShapedText(text, std::move(shapedText));
+      currentY += vg.height;
+      if (justifyGap != 0 && glyphIdx + 1 < column.glyphs.size() &&
+          column.glyphs[glyphIdx + 1].canBreakBefore) {
+        currentY += justifyGap;
       }
     }
   }
 
-  std::shared_ptr<tgfx::Typeface> findTypeface(const std::string& fontFamily,
-                                               const std::string& fontStyle) {
-    // First, try exact match from registered typefaces
-    if (!fontFamily.empty()) {
-      FontKey key = {};
-      key.family = fontFamily;
-      key.style = fontStyle.empty() ? "Regular" : fontStyle;
-      auto it = textLayout->registeredTypefaces.find(key);
-      if (it != textLayout->registeredTypefaces.end()) {
-        return it->second;
-      }
-
-      // Try matching family only (any style)
-      std::shared_ptr<tgfx::Typeface> bestTypeface = nullptr;
-      FontKey bestKey = {};
-      bool hasBest = false;
-      for (const auto& pair : textLayout->registeredTypefaces) {
-        if (pair.first.family != fontFamily) {
-          continue;
-        }
-        if (!hasBest) {
-          bestKey = pair.first;
-          bestTypeface = pair.second;
-          hasBest = true;
-          continue;
-        }
-        if (IsPreferredFontKey(pair.first, bestKey)) {
-          bestKey = pair.first;
-          bestTypeface = pair.second;
-        }
-      }
-      if (hasBest) {
-        return bestTypeface;
-      }
+  // Build TextBlob for each Text element with inverse-transform compensation.
+  for (auto& [text, glyphs] : textGlyphs) {
+    if (glyphs.empty() || text == nullptr) {
+      continue;
     }
 
-    // Then, try fallback typefaces by family name (no Typeface loading needed for comparison).
-    if (!fontFamily.empty()) {
-      for (auto& holder : textLayout->fallbackTypefaces) {
-        if (holder.getFontFamily() == fontFamily) {
-          return holder.getTypeface();
+    float compensateX = text->position.x;
+    float compensateY = text->position.y;
+
+    tgfx::TextBlobBuilder builder = {};
+
+    // Separate into Point-positioned and RSXform-positioned runs.
+    // We need to batch consecutive glyphs of the same font and positioning mode.
+    size_t runStart = 0;
+    while (runStart < glyphs.size()) {
+      auto& runFont = glyphs[runStart].font;
+      bool runUseRSXform = glyphs[runStart].useRSXform;
+      size_t runEnd = runStart + 1;
+      while (runEnd < glyphs.size() && glyphs[runEnd].font == runFont &&
+             glyphs[runEnd].useRSXform == runUseRSXform) {
+        runEnd++;
+      }
+      size_t count = runEnd - runStart;
+
+      if (runUseRSXform) {
+        auto& buffer = builder.allocRunRSXform(runFont, count);
+        auto* xforms = reinterpret_cast<tgfx::RSXform*>(buffer.positions);
+        for (size_t j = 0; j < count; j++) {
+          buffer.glyphs[j] = glyphs[runStart + j].glyphID;
+          auto xform = glyphs[runStart + j].xform;
+          xform.tx -= compensateX;
+          xform.ty -= compensateY;
+          xforms[j] = xform;
+        }
+      } else {
+        auto& buffer = builder.allocRunPos(runFont, count);
+        auto* positions = reinterpret_cast<tgfx::Point*>(buffer.positions);
+        for (size_t j = 0; j < count; j++) {
+          buffer.glyphs[j] = glyphs[runStart + j].glyphID;
+          positions[j] = tgfx::Point::Make(glyphs[runStart + j].position.x - compensateX,
+                                           glyphs[runStart + j].position.y - compensateY);
         }
       }
+      runStart = runEnd;
     }
 
-    // Use first fallback typeface
-    if (!textLayout->fallbackTypefaces.empty()) {
-      return textLayout->fallbackTypefaces[0].getTypeface();
+    auto textBlob = builder.build();
+    if (textBlob != nullptr) {
+      ShapedText shapedText = {};
+      shapedText.textBlob = textBlob;
+      storeShapedText(text, std::move(shapedText));
+    }
+  }
+}
+
+std::shared_ptr<tgfx::Typeface> TextLayoutContext::findTypeface(const std::string& fontFamily,
+                                                                const std::string& fontStyle) {
+  // First, try exact match from registered typefaces
+  if (!fontFamily.empty()) {
+    FontKey key = {};
+    key.family = fontFamily;
+    key.style = fontStyle.empty() ? "Regular" : fontStyle;
+    auto it = textLayout->registeredTypefaces.find(key);
+    if (it != textLayout->registeredTypefaces.end()) {
+      return it->second;
     }
 
-    // Last resort: try system font
-    if (!fontFamily.empty()) {
-      return tgfx::Typeface::MakeFromName(fontFamily, fontStyle);
+    // Try matching family only (any style)
+    std::shared_ptr<tgfx::Typeface> bestTypeface = nullptr;
+    FontKey bestKey = {};
+    bool hasBest = false;
+    for (const auto& pair : textLayout->registeredTypefaces) {
+      if (pair.first.family != fontFamily) {
+        continue;
+      }
+      if (!hasBest) {
+        bestKey = pair.first;
+        bestTypeface = pair.second;
+        hasBest = true;
+        continue;
+      }
+      if (IsPreferredFontKey(pair.first, bestKey)) {
+        bestKey = pair.first;
+        bestTypeface = pair.second;
+      }
     }
-
-    return nullptr;
+    if (hasBest) {
+      return bestTypeface;
+    }
   }
 
-  TextLayout* textLayout = nullptr;
-  PAGXDocument* document = nullptr;
-  ShapedTextMap result = {};
-  std::vector<Text*> textOrder = {};
-  std::unordered_map<const Font*, std::shared_ptr<tgfx::Typeface>> fontCache = {};
-};
+  // Then, try fallback typefaces by family name (no Typeface loading needed for comparison).
+  if (!fontFamily.empty()) {
+    for (auto& holder : textLayout->fallbackTypefaces) {
+      if (holder.getFontFamily() == fontFamily) {
+        return holder.getTypeface();
+      }
+    }
+  }
+
+  // Use first fallback typeface
+  if (!textLayout->fallbackTypefaces.empty()) {
+    return textLayout->fallbackTypefaces[0].getTypeface();
+  }
+
+  // Last resort: try system font
+  if (!fontFamily.empty()) {
+    return tgfx::Typeface::MakeFromName(fontFamily, fontStyle);
+  }
+
+  return nullptr;
+}
 
 TextLayoutResult TextLayout::layout(PAGXDocument* document) {
   TextLayoutContext context(this, document);
