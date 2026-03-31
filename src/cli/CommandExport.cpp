@@ -21,7 +21,9 @@
 #include <string>
 #include "cli/CliUtils.h"
 #include "pagx/PAGXImporter.h"
+#ifdef PAG_BUILD_SVG
 #include "pagx/SVGExporter.h"
+#endif
 
 namespace pagx::cli {
 
@@ -29,9 +31,11 @@ struct ExportOptions {
   std::string inputFile = {};
   std::string outputFile = {};
   std::string format = {};
+#ifdef PAG_BUILD_SVG
   int svgIndent = 2;
   bool svgNoXmlDeclaration = false;
   bool svgNoConvertTextToPath = false;
+#endif
 };
 
 static void PrintUsage() {
@@ -45,6 +49,7 @@ static void PrintUsage() {
       << "  --output <file>             Output file (default: <input>.<format>)\n"
       << "  --format <format>           Output format (svg; inferred from --output extension)\n"
       << "\n"
+#ifdef PAG_BUILD_SVG
       << "SVG options:\n"
       << "  --svg-indent <n>            Indentation spaces (default: 2, valid range: 0-16)\n"
       << "  --svg-no-xml-declaration    Omit the <?xml ...?> declaration\n"
@@ -55,7 +60,9 @@ static void PrintUsage() {
       << "  pagx export --input icon.pagx                    # PAGX to icon.svg\n"
       << "  pagx export --input icon.pagx --output out.svg   # PAGX to out.svg\n"
       << "  pagx export --format svg --input icon.pagx       # force SVG output format\n"
-      << "  pagx export --input icon.pagx --svg-indent 4     # 4-space indent\n";
+      << "  pagx export --input icon.pagx --svg-indent 4     # 4-space indent\n"
+#endif
+      ;
 }
 
 static int ParseOptions(int argc, char* argv[], ExportOptions* options) {
@@ -68,6 +75,7 @@ static int ParseOptions(int argc, char* argv[], ExportOptions* options) {
       options->outputFile = argv[++i];
     } else if (arg == "--format" && i + 1 < argc) {
       options->format = argv[++i];
+#ifdef PAG_BUILD_SVG
     } else if (arg == "--svg-indent" && i + 1 < argc) {
       char* endPtr = nullptr;
       long value = strtol(argv[++i], &endPtr, 10);
@@ -80,6 +88,7 @@ static int ParseOptions(int argc, char* argv[], ExportOptions* options) {
       options->svgNoXmlDeclaration = true;
     } else if (arg == "--svg-no-convert-text-to-path") {
       options->svgNoConvertTextToPath = true;
+#endif
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       return -1;
@@ -115,6 +124,7 @@ static int ParseOptions(int argc, char* argv[], ExportOptions* options) {
   return 0;
 }
 
+#ifdef PAG_BUILD_SVG
 static int ExportToSVG(const ExportOptions& options) {
   auto document = PAGXImporter::FromFile(options.inputFile);
   if (document == nullptr) {
@@ -140,6 +150,7 @@ static int ExportToSVG(const ExportOptions& options) {
   std::cout << "pagx export: wrote " << options.outputFile << "\n";
   return 0;
 }
+#endif
 
 int RunExport(int argc, char* argv[]) {
   ExportOptions options = {};
@@ -148,9 +159,11 @@ int RunExport(int argc, char* argv[]) {
     return parseResult == -1 ? 0 : parseResult;
   }
 
+#ifdef PAG_BUILD_SVG
   if (options.format == "svg") {
     return ExportToSVG(options);
   }
+#endif
 
   std::cerr << "pagx export: error: unsupported format '" << options.format << "'\n";
   return 1;

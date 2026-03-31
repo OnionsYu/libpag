@@ -22,7 +22,9 @@
 #include <string>
 #include "cli/CliUtils.h"
 #include "pagx/PAGXExporter.h"
+#ifdef PAG_BUILD_SVG
 #include "pagx/SVGImporter.h"
+#endif
 
 namespace pagx::cli {
 
@@ -30,9 +32,11 @@ struct ImportOptions {
   std::string inputFile = {};
   std::string outputFile = {};
   std::string format = {};
+#ifdef PAG_BUILD_SVG
   bool svgExpandUse = true;
   bool svgFlattenTransforms = false;
   bool svgPreserveUnknown = false;
+#endif
 };
 
 static void PrintUsage() {
@@ -45,6 +49,7 @@ static void PrintUsage() {
             << "  --output <file>             Output PAGX file (default: <input>.pagx)\n"
             << "  --format <format>           Force input format (svg)\n"
             << "\n"
+#ifdef PAG_BUILD_SVG
             << "SVG options:\n"
             << "  --svg-no-expand-use         Do not expand <use> references\n"
             << "  --svg-flatten-transforms    Flatten nested transforms into single matrices\n"
@@ -54,7 +59,9 @@ static void PrintUsage() {
             << "  pagx import --input icon.svg                     # SVG to icon.pagx\n"
             << "  pagx import --input icon.svg --output out.pagx   # SVG to out.pagx\n"
             << "  pagx import --format svg --input drawing.xml     # force treating drawing.xml as "
-               "SVG format\n";
+               "SVG format\n"
+#endif
+            ;
 }
 
 static int ParseOptions(int argc, char* argv[], ImportOptions* options) {
@@ -67,12 +74,14 @@ static int ParseOptions(int argc, char* argv[], ImportOptions* options) {
       options->outputFile = argv[++i];
     } else if (arg == "--format" && i + 1 < argc) {
       options->format = argv[++i];
+#ifdef PAG_BUILD_SVG
     } else if (arg == "--svg-no-expand-use") {
       options->svgExpandUse = false;
     } else if (arg == "--svg-flatten-transforms") {
       options->svgFlattenTransforms = true;
     } else if (arg == "--svg-preserve-unknown") {
       options->svgPreserveUnknown = true;
+#endif
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       return -1;
@@ -103,6 +112,7 @@ static int ParseOptions(int argc, char* argv[], ImportOptions* options) {
   return 0;
 }
 
+#ifdef PAG_BUILD_SVG
 static int ImportFromSVG(const ImportOptions& options) {
   SVGImporter::Options svgOptions = {};
   svgOptions.expandUseReferences = options.svgExpandUse;
@@ -131,6 +141,7 @@ static int ImportFromSVG(const ImportOptions& options) {
   std::cout << "pagx import: wrote " << options.outputFile << "\n";
   return 0;
 }
+#endif
 
 int RunImport(int argc, char* argv[]) {
   ImportOptions options = {};
@@ -139,9 +150,11 @@ int RunImport(int argc, char* argv[]) {
     return parseResult == -1 ? 0 : parseResult;
   }
 
+#ifdef PAG_BUILD_SVG
   if (options.format == "svg") {
     return ImportFromSVG(options);
   }
+#endif
 
   std::cerr << "pagx import: error: unsupported format '" << options.format << "'\n";
   return 1;
