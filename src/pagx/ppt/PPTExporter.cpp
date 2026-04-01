@@ -813,9 +813,9 @@ class PPTSlideWriter {
     // Write all layers into this single slide
     for (const auto* layer : layers) {
       Matrix layerMatrix = BuildLayerMatrix(layer);
-      writeLayerContents(xml, layer, layerMatrix);
+      writeLayerContents(xml, layer, layerMatrix, layer->alpha);
       for (const auto* child : layer->children) {
-        writeLayerAsShapes(xml, child, layerMatrix);
+        writeLayerAsShapes(xml, child, layerMatrix, layer->alpha);
       }
     }
 
@@ -981,7 +981,7 @@ class PPTSlideWriter {
     out.closeElement();
   }
 
-  void writeFillProperties(XMLBuilder& out, const Fill* fill) {
+  void writeFillProperties(XMLBuilder& out, const Fill* fill, float layerAlpha = 1.0f) {
     if (!fill || !fill->color) {
       out.openElement("a:noFill");
       out.closeElementSelfClosing();
@@ -990,7 +990,7 @@ class PPTSlideWriter {
     auto type = fill->color->nodeType();
     if (type == NodeType::SolidColor) {
       auto solid = static_cast<const SolidColor*>(fill->color);
-      writeSolidFill(out, solid->color, fill->alpha);
+      writeSolidFill(out, solid->color, fill->alpha * layerAlpha);
     } else if (type == NodeType::LinearGradient) {
       auto grad = static_cast<const LinearGradient*>(fill->color);
       out.openElement("a:gradFill");
@@ -1053,7 +1053,7 @@ class PPTSlideWriter {
     }
   }
 
-  void writeStrokeProperties(XMLBuilder& out, const Stroke* stroke) {
+  void writeStrokeProperties(XMLBuilder& out, const Stroke* stroke, float layerAlpha = 1.0f) {
     if (!stroke || !stroke->color) {
       return;
     }
@@ -1073,7 +1073,7 @@ class PPTSlideWriter {
     auto type = stroke->color->nodeType();
     if (type == NodeType::SolidColor) {
       auto solid = static_cast<const SolidColor*>(stroke->color);
-      writeSolidFill(out, solid->color, stroke->alpha);
+      writeSolidFill(out, solid->color, stroke->alpha * layerAlpha);
     } else {
       out.openElement("a:noFill");
       out.closeElementSelfClosing();
@@ -1244,7 +1244,7 @@ class PPTSlideWriter {
 
   // ── Shape writers ─────────────────────────────────────────────────────────
   void writeRectangle(XMLBuilder& out, const Rectangle* rect, const FillStrokeInfo& fs,
-                      const Matrix& transform) {
+                      const Matrix& transform, float layerAlpha = 1.0f) {
     float localX = rect->position.x - rect->size.width / 2;
     float localY = rect->position.y - rect->size.height / 2;
     auto tr = ApplyMatrixToRect(localX, localY, rect->size.width, rect->size.height, transform);
@@ -1275,15 +1275,15 @@ class PPTSlideWriter {
     } else {
       writePresetGeom(out, "rect");
     }
-    writeFillProperties(out, fs.fill);
-    writeStrokeProperties(out, fs.stroke);
+    writeFillProperties(out, fs.fill, layerAlpha);
+    writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
     out.closeElement();  // </p:sp>
   }
 
   void writeEllipse(XMLBuilder& out, const Ellipse* ellipse, const FillStrokeInfo& fs,
-                    const Matrix& transform) {
+                    const Matrix& transform, float layerAlpha = 1.0f) {
     float localX = ellipse->position.x - ellipse->size.width / 2;
     float localY = ellipse->position.y - ellipse->size.height / 2;
     auto tr = ApplyMatrixToRect(localX, localY, ellipse->size.width, ellipse->size.height,
@@ -1311,15 +1311,15 @@ class PPTSlideWriter {
     writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
               PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     writePresetGeom(out, "ellipse");
-    writeFillProperties(out, fs.fill);
-    writeStrokeProperties(out, fs.stroke);
+    writeFillProperties(out, fs.fill, layerAlpha);
+    writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
     out.closeElement();
   }
 
   void writePath(XMLBuilder& out, const Path* path, const FillStrokeInfo& fs,
-                 const Matrix& transform) {
+                 const Matrix& transform, float layerAlpha = 1.0f) {
     if (!path->data || path->data->isEmpty()) {
       return;
     }
@@ -1352,15 +1352,15 @@ class PPTSlideWriter {
     writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
               PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     writeCustomGeometry(out, path->data, bounds);
-    writeFillProperties(out, fs.fill);
-    writeStrokeProperties(out, fs.stroke);
+    writeFillProperties(out, fs.fill, layerAlpha);
+    writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
     out.closeElement();
   }
 
   void writeText(XMLBuilder& out, const Text* text, const FillStrokeInfo& fs,
-                 const Matrix& transform) {
+                 const Matrix& transform, float layerAlpha = 1.0f) {
     if (text->text.empty()) {
       return;
     }
@@ -1435,7 +1435,7 @@ class PPTSlideWriter {
       size_t nl = remaining.find('\n', pos);
       std::string line = (nl == std::string::npos) ? remaining.substr(pos)
                                                     : remaining.substr(pos, nl - pos);
-      writeParagraph(out, line, text, fs, firstParagraph);
+      writeParagraph(out, line, text, fs, firstParagraph, layerAlpha);
       firstParagraph = false;
       if (nl == std::string::npos) {
         break;
@@ -1448,7 +1448,8 @@ class PPTSlideWriter {
   }
 
   void writeParagraph(XMLBuilder& out, const std::string& lineText, const Text* text,
-                      const FillStrokeInfo& fs, bool /*firstParagraph*/) {
+                      const FillStrokeInfo& fs, bool /*firstParagraph*/,
+                      float layerAlpha = 1.0f) {
     out.openElement("a:p");
     out.closeElementStart();
 
@@ -1494,7 +1495,7 @@ class PPTSlideWriter {
       // Text color from fill
       if (fs.fill && fs.fill->color && fs.fill->color->nodeType() == NodeType::SolidColor) {
         auto solid = static_cast<const SolidColor*>(fs.fill->color);
-        writeSolidFill(out, solid->color, fs.fill->alpha);
+        writeSolidFill(out, solid->color, fs.fill->alpha * layerAlpha);
       }
 
       // Font
@@ -1527,7 +1528,8 @@ class PPTSlideWriter {
   }
 
   // ── Group shape ───────────────────────────────────────────────────────────
-  void writeGroup(XMLBuilder& out, const Group* group, const Matrix& parentTransform) {
+  void writeGroup(XMLBuilder& out, const Group* group, const Matrix& parentTransform,
+                  float layerAlpha = 1.0f) {
     Matrix groupMatrix = BuildGroupMatrix(group);
     Matrix accumulated = parentTransform * groupMatrix;
 
@@ -1553,19 +1555,19 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, accumulated);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, accumulated, layerAlpha);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, accumulated);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, accumulated, layerAlpha);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, accumulated);
+          writePath(out, static_cast<const Path*>(elem), fs, accumulated, layerAlpha);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, accumulated);
+          writeText(out, static_cast<const Text*>(elem), fs, accumulated, layerAlpha);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), accumulated);
+          writeGroup(out, static_cast<const Group*>(elem), accumulated, layerAlpha);
           break;
         default:
           break;
@@ -1574,7 +1576,8 @@ class PPTSlideWriter {
   }
 
   // ── Layer content writing ─────────────────────────────────────────────────
-  void writeLayerContents(XMLBuilder& out, const Layer* layer, const Matrix& transform) {
+  void writeLayerContents(XMLBuilder& out, const Layer* layer, const Matrix& transform,
+                          float layerAlpha = 1.0f) {
     auto fs = CollectFillStroke(layer->contents);
 
     for (const auto* elem : layer->contents) {
@@ -1584,19 +1587,19 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, transform);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, transform, layerAlpha);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, transform);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, transform, layerAlpha);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, transform);
+          writePath(out, static_cast<const Path*>(elem), fs, transform, layerAlpha);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, transform);
+          writeText(out, static_cast<const Text*>(elem), fs, transform, layerAlpha);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), transform);
+          writeGroup(out, static_cast<const Group*>(elem), transform, layerAlpha);
           break;
         default:
           break;
@@ -1604,16 +1607,18 @@ class PPTSlideWriter {
     }
   }
 
-  void writeLayerAsShapes(XMLBuilder& out, const Layer* layer, const Matrix& parentTransform) {
+  void writeLayerAsShapes(XMLBuilder& out, const Layer* layer, const Matrix& parentTransform,
+                          float parentAlpha = 1.0f) {
     if (!layer->visible) {
       return;
     }
     Matrix layerMatrix = BuildLayerMatrix(layer);
     Matrix accumulated = parentTransform * layerMatrix;
+    float accumulatedAlpha = parentAlpha * layer->alpha;
 
-    writeLayerContents(out, layer, accumulated);
+    writeLayerContents(out, layer, accumulated, accumulatedAlpha);
     for (const auto* child : layer->children) {
-      writeLayerAsShapes(out, child, accumulated);
+      writeLayerAsShapes(out, child, accumulated, accumulatedAlpha);
     }
   }
 };
