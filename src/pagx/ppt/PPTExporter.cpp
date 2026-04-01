@@ -43,6 +43,7 @@
 #include "pagx/nodes/Stroke.h"
 #include "pagx/nodes/Text.h"
 #include "pagx/nodes/TextBox.h"
+#include "pagx/types/MaskType.h"
 #include "pagx/types/Rect.h"
 #include "pagx/utils/Base64.h"
 #include "pagx/utils/StringParser.h"
@@ -94,17 +95,17 @@ class ZipWriter {
     entry.localOffset = static_cast<uint32_t>(buffer_.size());
 
     // Local file header
-    writeU32(0x04034b50);       // signature
-    writeU16(20);               // version needed
-    writeU16(0);                // flags
-    writeU16(0);                // compression: stored
-    writeU16(0);                // mod time
-    writeU16(0);                // mod date
+    writeU32(0x04034b50);  // signature
+    writeU16(20);          // version needed
+    writeU16(0);           // flags
+    writeU16(0);           // compression: stored
+    writeU16(0);           // mod time
+    writeU16(0);           // mod date
     writeU32(entry.crc32);
     writeU32(static_cast<uint32_t>(len));  // compressed size
     writeU32(static_cast<uint32_t>(len));  // uncompressed size
     writeU16(static_cast<uint16_t>(name.size()));
-    writeU16(0);                // extra field length
+    writeU16(0);  // extra field length
     buffer_.insert(buffer_.end(), name.begin(), name.end());
     buffer_.insert(buffer_.end(), data, data + len);
 
@@ -115,22 +116,22 @@ class ZipWriter {
     uint32_t cdOffset = static_cast<uint32_t>(buffer_.size());
     for (const auto& entry : entries_) {
       // Central directory entry
-      writeU32(0x02014b50);       // signature
-      writeU16(20);               // version made by
-      writeU16(20);               // version needed
-      writeU16(0);                // flags
-      writeU16(0);                // compression
-      writeU16(0);                // mod time
-      writeU16(0);                // mod date
+      writeU32(0x02014b50);  // signature
+      writeU16(20);          // version made by
+      writeU16(20);          // version needed
+      writeU16(0);           // flags
+      writeU16(0);           // compression
+      writeU16(0);           // mod time
+      writeU16(0);           // mod date
       writeU32(entry.crc32);
       writeU32(static_cast<uint32_t>(entry.data.size()));
       writeU32(static_cast<uint32_t>(entry.data.size()));
       writeU16(static_cast<uint16_t>(entry.name.size()));
-      writeU16(0);                // extra field length
-      writeU16(0);                // file comment length
-      writeU16(0);                // disk number start
-      writeU16(0);                // internal attributes
-      writeU32(0);                // external attributes
+      writeU16(0);  // extra field length
+      writeU16(0);  // file comment length
+      writeU16(0);  // disk number start
+      writeU16(0);  // internal attributes
+      writeU32(0);  // external attributes
       writeU32(entry.localOffset);
       buffer_.insert(buffer_.end(), entry.name.begin(), entry.name.end());
     }
@@ -138,13 +139,13 @@ class ZipWriter {
 
     // End of central directory
     writeU32(0x06054b50);
-    writeU16(0);                // disk number
-    writeU16(0);                // CD start disk
+    writeU16(0);  // disk number
+    writeU16(0);  // CD start disk
     writeU16(static_cast<uint16_t>(entries_.size()));
     writeU16(static_cast<uint16_t>(entries_.size()));
     writeU32(cdSize);
     writeU32(cdOffset);
-    writeU16(0);                // comment length
+    writeU16(0);  // comment length
 
     return std::move(buffer_);
   }
@@ -356,6 +357,38 @@ static FillStrokeInfo CollectFillStroke(const std::vector<Element*>& contents) {
 }
 
 //==============================================================================
+// Mask information for Alpha/Luminance mask fusion
+//==============================================================================
+
+struct MaskInfo {
+  const ColorSource* maskColor = nullptr;
+  float maskAlpha = 1.0f;
+  MaskType maskType = MaskType::Alpha;
+};
+
+static MaskInfo ExtractMaskInfo(const Layer* maskLayer, MaskType maskType) {
+  auto fs = CollectFillStroke(maskLayer->contents);
+  if (fs.fill && fs.fill->color) {
+    return {fs.fill->color, fs.fill->alpha, maskType};
+  }
+  for (const auto* child : maskLayer->children) {
+    auto childFs = CollectFillStroke(child->contents);
+    if (childFs.fill && childFs.fill->color) {
+      return {childFs.fill->color, childFs.fill->alpha, maskType};
+    }
+  }
+  return {{}, 1.0f, maskType};
+}
+
+static float ComputeMaskAlpha(const Color& color, MaskType maskType) {
+  if (maskType == MaskType::Luminance) {
+    // ITU-R BT.709 luminance coefficients
+    return (0.2126f * color.red + 0.7152f * color.green + 0.0722f * color.blue) * color.alpha;
+  }
+  return color.alpha;
+}
+
+//==============================================================================
 // Layer and Group matrix builders (matching SVGExporter logic)
 //==============================================================================
 
@@ -365,6 +398,35 @@ static Matrix BuildLayerMatrix(const Layer* layer) {
     m = Matrix::Translate(layer->x, layer->y) * m;
   }
   return m;
+}
+
+//==============================================================================
+// Contour mask geometry extraction
+//==============================================================================
+
+struct ContourMaskGeom {
+  const Element* geometry = nullptr;
+  Matrix transform = {};
+};
+
+static ContourMaskGeom ExtractContourGeometry(const Layer* maskLayer) {
+  Matrix maskMatrix = BuildLayerMatrix(maskLayer);
+  for (const auto* elem : maskLayer->contents) {
+    auto t = elem->nodeType();
+    if (t == NodeType::Rectangle || t == NodeType::Ellipse || t == NodeType::Path) {
+      return {elem, maskMatrix};
+    }
+  }
+  for (const auto* child : maskLayer->children) {
+    Matrix childMatrix = maskMatrix * BuildLayerMatrix(child);
+    for (const auto* elem : child->contents) {
+      auto t = elem->nodeType();
+      if (t == NodeType::Rectangle || t == NodeType::Ellipse || t == NodeType::Path) {
+        return {elem, childMatrix};
+      }
+    }
+  }
+  return {};
 }
 
 static Matrix BuildGroupMatrix(const Group* group) {
@@ -484,8 +546,7 @@ static std::string GenerateContentTypes(int slideCount, bool hasImages) {
 
   xml.openElement("Default");
   xml.addAttribute("Extension", "rels");
-  xml.addAttribute("ContentType",
-                    "application/vnd.openxmlformats-package.relationships+xml");
+  xml.addAttribute("ContentType", "application/vnd.openxmlformats-package.relationships+xml");
   xml.closeElementSelfClosing();
 
   if (hasImages) {
@@ -509,30 +570,26 @@ static std::string GenerateContentTypes(int slideCount, bool hasImages) {
 
   xml.openElement("Override");
   xml.addAttribute("PartName", "/ppt/slideMasters/slideMaster1.xml");
-  xml.addAttribute(
-      "ContentType",
-      "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml");
+  xml.addAttribute("ContentType",
+                   "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml");
   xml.closeElementSelfClosing();
 
   xml.openElement("Override");
   xml.addAttribute("PartName", "/ppt/slideLayouts/slideLayout1.xml");
-  xml.addAttribute(
-      "ContentType",
-      "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml");
+  xml.addAttribute("ContentType",
+                   "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml");
   xml.closeElementSelfClosing();
 
   xml.openElement("Override");
   xml.addAttribute("PartName", "/ppt/theme/theme1.xml");
-  xml.addAttribute("ContentType",
-                    "application/vnd.openxmlformats-officedocument.theme+xml");
+  xml.addAttribute("ContentType", "application/vnd.openxmlformats-officedocument.theme+xml");
   xml.closeElementSelfClosing();
 
   for (int i = 1; i <= slideCount; i++) {
     xml.openElement("Override");
     xml.addAttribute("PartName", "/ppt/slides/slide" + std::to_string(i) + ".xml");
-    xml.addAttribute(
-        "ContentType",
-        "application/vnd.openxmlformats-officedocument.presentationml.slide+xml");
+    xml.addAttribute("ContentType",
+                     "application/vnd.openxmlformats-officedocument.presentationml.slide+xml");
     xml.closeElementSelfClosing();
   }
 
@@ -554,7 +611,7 @@ static std::string GeneratePresentation(int slideCount, int64_t cx, int64_t cy) 
   xml.openElement("p:presentation");
   xml.addAttribute("xmlns:a", "http://schemas.openxmlformats.org/drawingml/2006/main");
   xml.addAttribute("xmlns:r",
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+                   "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
   xml.addAttribute("xmlns:p", "http://schemas.openxmlformats.org/presentationml/2006/main");
   xml.closeElementStart();
 
@@ -599,17 +656,16 @@ static std::string GeneratePresentationRels(int slideCount) {
 
   xml.openElement("Relationship");
   xml.addAttribute("Id", "rId1");
-  xml.addAttribute("Type",
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster");
+  xml.addAttribute(
+      "Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster");
   xml.addAttribute("Target", "slideMasters/slideMaster1.xml");
   xml.closeElementSelfClosing();
 
   for (int i = 0; i < slideCount; i++) {
     xml.openElement("Relationship");
     xml.addAttribute("Id", "rId" + std::to_string(i + 2));
-    xml.addAttribute(
-        "Type",
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide");
+    xml.addAttribute("Type",
+                     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide");
     xml.addAttribute("Target", "slides/slide" + std::to_string(i + 1) + ".xml");
     xml.closeElementSelfClosing();
   }
@@ -618,7 +674,7 @@ static std::string GeneratePresentationRels(int slideCount) {
   xml.openElement("Relationship");
   xml.addAttribute("Id", "rId" + std::to_string(themeRelId));
   xml.addAttribute("Type",
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme");
+                   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme");
   xml.addAttribute("Target", "theme/theme1.xml");
   xml.closeElementSelfClosing();
 
@@ -787,8 +843,7 @@ class PPTSlideWriter {
     std::string mediaFileName;
   };
 
-  PPTSlideWriter(PPTMediaContext* media, int indent)
-      : media_(media), indent_(indent) {
+  PPTSlideWriter(PPTMediaContext* media, int indent) : media_(media), indent_(indent) {
   }
 
   std::string writeSlide(const std::vector<Layer*>& layers) {
@@ -797,7 +852,7 @@ class PPTSlideWriter {
     xml.openElement("p:sld");
     xml.addAttribute("xmlns:a", "http://schemas.openxmlformats.org/drawingml/2006/main");
     xml.addAttribute("xmlns:r",
-                      "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+                     "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
     xml.addAttribute("xmlns:p", "http://schemas.openxmlformats.org/presentationml/2006/main");
     xml.closeElementStart();
 
@@ -812,8 +867,29 @@ class PPTSlideWriter {
 
     // Write all layers into this single slide
     for (const auto* layer : layers) {
+      if (!layer->visible) {
+        continue;
+      }
       Matrix layerMatrix = BuildLayerMatrix(layer);
-      writeLayerContents(xml, layer, layerMatrix, layer->alpha);
+
+      if (layer->mask && layer->maskType == MaskType::Contour) {
+        auto contourGeom = ExtractContourGeometry(layer->mask);
+        if (contourGeom.geometry) {
+          writeContourMaskedShape(xml, layer, contourGeom, layerMatrix, layer->alpha);
+          continue;
+        }
+      }
+
+      const MaskInfo* maskInfo = nullptr;
+      MaskInfo layerMaskInfo = {};
+      if (layer->mask && layer->maskType != MaskType::Contour) {
+        layerMaskInfo = ExtractMaskInfo(layer->mask, layer->maskType);
+        if (layerMaskInfo.maskColor) {
+          maskInfo = &layerMaskInfo;
+        }
+      }
+
+      writeLayerContents(xml, layer, layerMatrix, layer->alpha, maskInfo);
       for (const auto* child : layer->children) {
         writeLayerAsShapes(xml, child, layerMatrix, layer->alpha);
       }
@@ -842,17 +918,15 @@ class PPTSlideWriter {
     xml.openElement("Relationship");
     xml.addAttribute("Id", "rId1");
     xml.addAttribute(
-        "Type",
-        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout");
+        "Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout");
     xml.addAttribute("Target", "../slideLayouts/slideLayout1.xml");
     xml.closeElementSelfClosing();
 
     for (const auto& ref : imageRefs_) {
       xml.openElement("Relationship");
       xml.addAttribute("Id", ref.relId);
-      xml.addAttribute(
-          "Type",
-          "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");
+      xml.addAttribute("Type",
+                       "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");
       xml.addAttribute("Target", "../media/" + ref.mediaFileName);
       xml.closeElementSelfClosing();
     }
@@ -981,7 +1055,12 @@ class PPTSlideWriter {
     out.closeElement();
   }
 
-  void writeFillProperties(XMLBuilder& out, const Fill* fill, float layerAlpha = 1.0f) {
+  void writeFillProperties(XMLBuilder& out, const Fill* fill, float layerAlpha = 1.0f,
+                           const MaskInfo* maskInfo = nullptr) {
+    if (maskInfo && maskInfo->maskColor) {
+      writeMaskedFill(out, fill, layerAlpha, *maskInfo);
+      return;
+    }
     if (!fill || !fill->color) {
       out.openElement("a:noFill");
       out.closeElementSelfClosing();
@@ -993,39 +1072,10 @@ class PPTSlideWriter {
       writeSolidFill(out, solid->color, fill->alpha * layerAlpha);
     } else if (type == NodeType::LinearGradient) {
       auto grad = static_cast<const LinearGradient*>(fill->color);
-      out.openElement("a:gradFill");
-      out.closeElementStart();
-      out.openElement("a:gsLst");
-      out.closeElementStart();
-      writeGradientStops(out, grad->colorStops);
-      out.closeElement();
-      float dx = grad->endPoint.x - grad->startPoint.x;
-      float dy = grad->endPoint.y - grad->startPoint.y;
-      float angle = std::atan2(dy, dx) * 180.0f / 3.14159265358979323846f;
-      out.openElement("a:lin");
-      out.addAttribute("ang", DegreesToPPTRotation(angle));
-      out.addAttribute("scaled", "0");
-      out.closeElementSelfClosing();
-      out.closeElement();
+      writeLinearGradFill(out, grad->colorStops, grad->startPoint, grad->endPoint);
     } else if (type == NodeType::RadialGradient) {
       auto grad = static_cast<const RadialGradient*>(fill->color);
-      out.openElement("a:gradFill");
-      out.closeElementStart();
-      out.openElement("a:gsLst");
-      out.closeElementStart();
-      writeGradientStops(out, grad->colorStops);
-      out.closeElement();
-      out.openElement("a:path");
-      out.addAttribute("path", "circle");
-      out.closeElementStart();
-      out.openElement("a:fillToRect");
-      out.addAttribute("l", static_cast<int64_t>(50000));
-      out.addAttribute("t", static_cast<int64_t>(50000));
-      out.addAttribute("r", static_cast<int64_t>(50000));
-      out.addAttribute("b", static_cast<int64_t>(50000));
-      out.closeElementSelfClosing();
-      out.closeElement();
-      out.closeElement();
+      writeRadialGradFill(out, grad->colorStops);
     } else if (type == NodeType::ImagePattern) {
       auto pattern = static_cast<const ImagePattern*>(fill->color);
       if (pattern->image) {
@@ -1051,6 +1101,143 @@ class PPTSlideWriter {
       out.openElement("a:noFill");
       out.closeElementSelfClosing();
     }
+  }
+
+  void writeLinearGradFill(XMLBuilder& out, const std::vector<ColorStop*>& stops,
+                           const Point& startPoint, const Point& endPoint) {
+    out.openElement("a:gradFill");
+    out.closeElementStart();
+    out.openElement("a:gsLst");
+    out.closeElementStart();
+    writeGradientStops(out, stops);
+    out.closeElement();
+    float dx = endPoint.x - startPoint.x;
+    float dy = endPoint.y - startPoint.y;
+    float angle = std::atan2(dy, dx) * 180.0f / 3.14159265358979323846f;
+    out.openElement("a:lin");
+    out.addAttribute("ang", DegreesToPPTRotation(angle));
+    out.addAttribute("scaled", "0");
+    out.closeElementSelfClosing();
+    out.closeElement();
+  }
+
+  void writeRadialGradFill(XMLBuilder& out, const std::vector<ColorStop*>& stops) {
+    out.openElement("a:gradFill");
+    out.closeElementStart();
+    out.openElement("a:gsLst");
+    out.closeElementStart();
+    writeGradientStops(out, stops);
+    out.closeElement();
+    out.openElement("a:path");
+    out.addAttribute("path", "circle");
+    out.closeElementStart();
+    out.openElement("a:fillToRect");
+    out.addAttribute("l", static_cast<int64_t>(50000));
+    out.addAttribute("t", static_cast<int64_t>(50000));
+    out.addAttribute("r", static_cast<int64_t>(50000));
+    out.addAttribute("b", static_cast<int64_t>(50000));
+    out.closeElementSelfClosing();
+    out.closeElement();
+    out.closeElement();
+  }
+
+  void writeMaskedFill(XMLBuilder& out, const Fill* fill, float layerAlpha,
+                       const MaskInfo& maskInfo) {
+    // Resolve content color
+    Color contentColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    float contentAlpha = layerAlpha;
+    if (fill && fill->color && fill->color->nodeType() == NodeType::SolidColor) {
+      contentColor = static_cast<const SolidColor*>(fill->color)->color;
+      contentAlpha *= fill->alpha;
+    }
+
+    auto maskType = maskInfo.maskType;
+    auto maskColorType = maskInfo.maskColor->nodeType();
+
+    if (maskColorType == NodeType::LinearGradient) {
+      auto grad = static_cast<const LinearGradient*>(maskInfo.maskColor);
+      auto stops = buildMaskedStops(contentColor, contentAlpha, grad->colorStops, maskType,
+                                    maskInfo.maskAlpha);
+      writeLinearGradFillFromStops(out, stops, grad->startPoint, grad->endPoint);
+    } else if (maskColorType == NodeType::RadialGradient) {
+      auto grad = static_cast<const RadialGradient*>(maskInfo.maskColor);
+      auto stops = buildMaskedStops(contentColor, contentAlpha, grad->colorStops, maskType,
+                                    maskInfo.maskAlpha);
+      writeRadialGradFillFromStops(out, stops);
+    } else if (maskColorType == NodeType::SolidColor) {
+      auto solid = static_cast<const SolidColor*>(maskInfo.maskColor);
+      float maskAlpha = ComputeMaskAlpha(solid->color, maskType) * maskInfo.maskAlpha;
+      writeSolidFill(out, contentColor, contentAlpha * maskAlpha);
+    } else {
+      writeFillProperties(out, fill, layerAlpha);
+    }
+  }
+
+  struct MaskedStop {
+    float offset = 0.0f;
+    Color color = {};
+  };
+
+  std::vector<MaskedStop> buildMaskedStops(const Color& contentColor, float contentAlpha,
+                                           const std::vector<ColorStop*>& maskStops,
+                                           MaskType maskType, float maskAlpha) {
+    std::vector<MaskedStop> stops;
+    stops.reserve(maskStops.size());
+    for (const auto* stop : maskStops) {
+      float alpha = ComputeMaskAlpha(stop->color, maskType) * maskAlpha * contentAlpha;
+      Color c = contentColor;
+      c.alpha = alpha;
+      stops.push_back({stop->offset, c});
+    }
+    return stops;
+  }
+
+  void writeMaskedGradientStops(XMLBuilder& out, const std::vector<MaskedStop>& stops) {
+    for (const auto& stop : stops) {
+      out.openElement("a:gs");
+      out.addAttribute("pos", static_cast<int64_t>(std::round(stop.offset * 100000.0f)));
+      out.closeElementStart();
+      writeColorElement(out, stop.color);
+      out.closeElement();
+    }
+  }
+
+  void writeLinearGradFillFromStops(XMLBuilder& out, const std::vector<MaskedStop>& stops,
+                                    const Point& startPoint, const Point& endPoint) {
+    out.openElement("a:gradFill");
+    out.closeElementStart();
+    out.openElement("a:gsLst");
+    out.closeElementStart();
+    writeMaskedGradientStops(out, stops);
+    out.closeElement();
+    float dx = endPoint.x - startPoint.x;
+    float dy = endPoint.y - startPoint.y;
+    float angle = std::atan2(dy, dx) * 180.0f / 3.14159265358979323846f;
+    out.openElement("a:lin");
+    out.addAttribute("ang", DegreesToPPTRotation(angle));
+    out.addAttribute("scaled", "0");
+    out.closeElementSelfClosing();
+    out.closeElement();
+  }
+
+  void writeRadialGradFillFromStops(XMLBuilder& out, const std::vector<MaskedStop>& stops) {
+    out.openElement("a:gradFill");
+    out.closeElementStart();
+    out.openElement("a:gsLst");
+    out.closeElementStart();
+    writeMaskedGradientStops(out, stops);
+    out.closeElement();
+    out.openElement("a:path");
+    out.addAttribute("path", "circle");
+    out.closeElementStart();
+    out.openElement("a:fillToRect");
+    out.addAttribute("l", static_cast<int64_t>(50000));
+    out.addAttribute("t", static_cast<int64_t>(50000));
+    out.addAttribute("r", static_cast<int64_t>(50000));
+    out.addAttribute("b", static_cast<int64_t>(50000));
+    out.closeElementSelfClosing();
+    out.closeElement();
+    out.closeElement();
   }
 
   void writeStrokeProperties(XMLBuilder& out, const Stroke* stroke, float layerAlpha = 1.0f) {
@@ -1244,7 +1431,8 @@ class PPTSlideWriter {
 
   // ── Shape writers ─────────────────────────────────────────────────────────
   void writeRectangle(XMLBuilder& out, const Rectangle* rect, const FillStrokeInfo& fs,
-                      const Matrix& transform, float layerAlpha = 1.0f) {
+                      const Matrix& transform, float layerAlpha = 1.0f,
+                      const MaskInfo* maskInfo = nullptr) {
     float localX = rect->position.x - rect->size.width / 2;
     float localY = rect->position.y - rect->size.height / 2;
     auto tr = ApplyMatrixToRect(localX, localY, rect->size.width, rect->size.height, transform);
@@ -1268,14 +1456,14 @@ class PPTSlideWriter {
     out.openElement("p:spPr");
     out.closeElementStart();
     int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
-    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
-              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y), PixelsToEMU(tr.width),
+              PixelsToEMU(tr.height), rot);
     if (rect->roundness > 0) {
       writeRoundRectGeom(out, rect->roundness, rect->size.width, rect->size.height);
     } else {
       writePresetGeom(out, "rect");
     }
-    writeFillProperties(out, fs.fill, layerAlpha);
+    writeFillProperties(out, fs.fill, layerAlpha, maskInfo);
     writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
@@ -1283,11 +1471,12 @@ class PPTSlideWriter {
   }
 
   void writeEllipse(XMLBuilder& out, const Ellipse* ellipse, const FillStrokeInfo& fs,
-                    const Matrix& transform, float layerAlpha = 1.0f) {
+                    const Matrix& transform, float layerAlpha = 1.0f,
+                    const MaskInfo* maskInfo = nullptr) {
     float localX = ellipse->position.x - ellipse->size.width / 2;
     float localY = ellipse->position.y - ellipse->size.height / 2;
-    auto tr = ApplyMatrixToRect(localX, localY, ellipse->size.width, ellipse->size.height,
-                                transform);
+    auto tr =
+        ApplyMatrixToRect(localX, localY, ellipse->size.width, ellipse->size.height, transform);
 
     int id = allocShapeId();
     out.openElement("p:sp");
@@ -1308,10 +1497,10 @@ class PPTSlideWriter {
     out.openElement("p:spPr");
     out.closeElementStart();
     int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
-    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
-              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y), PixelsToEMU(tr.width),
+              PixelsToEMU(tr.height), rot);
     writePresetGeom(out, "ellipse");
-    writeFillProperties(out, fs.fill, layerAlpha);
+    writeFillProperties(out, fs.fill, layerAlpha, maskInfo);
     writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
@@ -1319,7 +1508,8 @@ class PPTSlideWriter {
   }
 
   void writePath(XMLBuilder& out, const Path* path, const FillStrokeInfo& fs,
-                 const Matrix& transform, float layerAlpha = 1.0f) {
+                 const Matrix& transform, float layerAlpha = 1.0f,
+                 const MaskInfo* maskInfo = nullptr) {
     if (!path->data || path->data->isEmpty()) {
       return;
     }
@@ -1349,10 +1539,10 @@ class PPTSlideWriter {
     out.openElement("p:spPr");
     out.closeElementStart();
     int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
-    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
-              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y), PixelsToEMU(tr.width),
+              PixelsToEMU(tr.height), rot);
     writeCustomGeometry(out, path->data, bounds);
-    writeFillProperties(out, fs.fill, layerAlpha);
+    writeFillProperties(out, fs.fill, layerAlpha, maskInfo);
     writeStrokeProperties(out, fs.stroke, layerAlpha);
     out.closeElement();
 
@@ -1360,7 +1550,8 @@ class PPTSlideWriter {
   }
 
   void writeText(XMLBuilder& out, const Text* text, const FillStrokeInfo& fs,
-                 const Matrix& transform, float layerAlpha = 1.0f) {
+                 const Matrix& transform, float layerAlpha = 1.0f,
+                 const MaskInfo* /*maskInfo*/ = nullptr) {
     if (text->text.empty()) {
       return;
     }
@@ -1402,8 +1593,8 @@ class PPTSlideWriter {
     out.openElement("p:spPr");
     out.closeElementStart();
     int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
-    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
-              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y), PixelsToEMU(tr.width),
+              PixelsToEMU(tr.height), rot);
     writePresetGeom(out, "rect");
     out.openElement("a:noFill");
     out.closeElementSelfClosing();
@@ -1433,8 +1624,8 @@ class PPTSlideWriter {
     bool firstParagraph = true;
     while (pos <= remaining.size()) {
       size_t nl = remaining.find('\n', pos);
-      std::string line = (nl == std::string::npos) ? remaining.substr(pos)
-                                                    : remaining.substr(pos, nl - pos);
+      std::string line =
+          (nl == std::string::npos) ? remaining.substr(pos) : remaining.substr(pos, nl - pos);
       writeParagraph(out, line, text, fs, firstParagraph, layerAlpha);
       firstParagraph = false;
       if (nl == std::string::npos) {
@@ -1448,8 +1639,7 @@ class PPTSlideWriter {
   }
 
   void writeParagraph(XMLBuilder& out, const std::string& lineText, const Text* text,
-                      const FillStrokeInfo& fs, bool /*firstParagraph*/,
-                      float layerAlpha = 1.0f) {
+                      const FillStrokeInfo& fs, bool /*firstParagraph*/, float layerAlpha = 1.0f) {
     out.openElement("a:p");
     out.closeElementStart();
 
@@ -1474,12 +1664,10 @@ class PPTSlideWriter {
       out.openElement("a:rPr");
       out.addAttribute("lang", "en-US");
       out.addAttribute("sz", FontSizeToPPT(text->fontSize));
-      bool hasBold = text->fauxBold ||
-                     (!text->fontStyle.empty() &&
-                      text->fontStyle.find("Bold") != std::string::npos);
-      bool hasItalic = text->fauxItalic ||
-                       (!text->fontStyle.empty() &&
-                        text->fontStyle.find("Italic") != std::string::npos);
+      bool hasBold = text->fauxBold || (!text->fontStyle.empty() &&
+                                        text->fontStyle.find("Bold") != std::string::npos);
+      bool hasItalic = text->fauxItalic || (!text->fontStyle.empty() &&
+                                            text->fontStyle.find("Italic") != std::string::npos);
       if (hasBold) {
         out.addAttribute("b", static_cast<int64_t>(1));
       }
@@ -1529,7 +1717,7 @@ class PPTSlideWriter {
 
   // ── Group shape ───────────────────────────────────────────────────────────
   void writeGroup(XMLBuilder& out, const Group* group, const Matrix& parentTransform,
-                  float layerAlpha = 1.0f) {
+                  float layerAlpha = 1.0f, const MaskInfo* maskInfo = nullptr) {
     Matrix groupMatrix = BuildGroupMatrix(group);
     Matrix accumulated = parentTransform * groupMatrix;
 
@@ -1555,19 +1743,21 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, accumulated, layerAlpha);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, accumulated, layerAlpha,
+                         maskInfo);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, accumulated, layerAlpha);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, accumulated, layerAlpha,
+                       maskInfo);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, accumulated, layerAlpha);
+          writePath(out, static_cast<const Path*>(elem), fs, accumulated, layerAlpha, maskInfo);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, accumulated, layerAlpha);
+          writeText(out, static_cast<const Text*>(elem), fs, accumulated, layerAlpha, maskInfo);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), accumulated, layerAlpha);
+          writeGroup(out, static_cast<const Group*>(elem), accumulated, layerAlpha, maskInfo);
           break;
         default:
           break;
@@ -1577,7 +1767,7 @@ class PPTSlideWriter {
 
   // ── Layer content writing ─────────────────────────────────────────────────
   void writeLayerContents(XMLBuilder& out, const Layer* layer, const Matrix& transform,
-                          float layerAlpha = 1.0f) {
+                          float layerAlpha = 1.0f, const MaskInfo* maskInfo = nullptr) {
     auto fs = CollectFillStroke(layer->contents);
 
     for (const auto* elem : layer->contents) {
@@ -1587,23 +1777,39 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, transform, layerAlpha);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, transform, layerAlpha,
+                         maskInfo);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, transform, layerAlpha);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, transform, layerAlpha, maskInfo);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, transform, layerAlpha);
+          writePath(out, static_cast<const Path*>(elem), fs, transform, layerAlpha, maskInfo);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, transform, layerAlpha);
+          writeText(out, static_cast<const Text*>(elem), fs, transform, layerAlpha, maskInfo);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), transform, layerAlpha);
+          writeGroup(out, static_cast<const Group*>(elem), transform, layerAlpha, maskInfo);
           break;
         default:
           break;
       }
+    }
+  }
+
+  void writeContourMaskedShape(XMLBuilder& out, const Layer* layer, const ContourMaskGeom& maskGeom,
+                               const Matrix& transform, float layerAlpha) {
+    auto fs = CollectFillStroke(layer->contents);
+    Matrix combined = transform * maskGeom.transform;
+    auto geomType = maskGeom.geometry->nodeType();
+    if (geomType == NodeType::Rectangle) {
+      writeRectangle(out, static_cast<const Rectangle*>(maskGeom.geometry), fs, combined,
+                     layerAlpha);
+    } else if (geomType == NodeType::Ellipse) {
+      writeEllipse(out, static_cast<const Ellipse*>(maskGeom.geometry), fs, combined, layerAlpha);
+    } else if (geomType == NodeType::Path) {
+      writePath(out, static_cast<const Path*>(maskGeom.geometry), fs, combined, layerAlpha);
     }
   }
 
@@ -1616,7 +1822,24 @@ class PPTSlideWriter {
     Matrix accumulated = parentTransform * layerMatrix;
     float accumulatedAlpha = parentAlpha * layer->alpha;
 
-    writeLayerContents(out, layer, accumulated, accumulatedAlpha);
+    if (layer->mask && layer->maskType == MaskType::Contour) {
+      auto contourGeom = ExtractContourGeometry(layer->mask);
+      if (contourGeom.geometry) {
+        writeContourMaskedShape(out, layer, contourGeom, accumulated, accumulatedAlpha);
+        return;
+      }
+    }
+
+    const MaskInfo* maskInfo = nullptr;
+    MaskInfo layerMaskInfo = {};
+    if (layer->mask && layer->maskType != MaskType::Contour) {
+      layerMaskInfo = ExtractMaskInfo(layer->mask, layer->maskType);
+      if (layerMaskInfo.maskColor) {
+        maskInfo = &layerMaskInfo;
+      }
+    }
+
+    writeLayerContents(out, layer, accumulated, accumulatedAlpha, maskInfo);
     for (const auto* child : layer->children) {
       writeLayerAsShapes(out, child, accumulated, accumulatedAlpha);
     }
@@ -1645,13 +1868,10 @@ bool PPTExporter::ToFile(const PAGXDocument& document, const std::string& filePa
   std::string slideRelsXml = slideWriter.writeSlideRels();
 
   // Add boilerplate files
-  zip.addFile("[Content_Types].xml",
-              GenerateContentTypes(1, media.hasImages()));
+  zip.addFile("[Content_Types].xml", GenerateContentTypes(1, media.hasImages()));
   zip.addFile("_rels/.rels", GenerateRootRels());
-  zip.addFile("ppt/presentation.xml",
-              GeneratePresentation(1, slideCX, slideCY));
-  zip.addFile("ppt/_rels/presentation.xml.rels",
-              GeneratePresentationRels(1));
+  zip.addFile("ppt/presentation.xml", GeneratePresentation(1, slideCX, slideCY));
+  zip.addFile("ppt/_rels/presentation.xml.rels", GeneratePresentationRels(1));
   zip.addFile("ppt/theme/theme1.xml", GenerateTheme());
   zip.addFile("ppt/slideMasters/slideMaster1.xml", GenerateSlideMaster());
   zip.addFile("ppt/slideMasters/_rels/slideMaster1.xml.rels", GenerateSlideMasterRels());
