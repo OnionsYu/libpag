@@ -49,6 +49,7 @@
 
 namespace pagx {
 
+using pag::DegreesToRadians;
 using pag::FloatNearlyZero;
 
 //==============================================================================
@@ -352,6 +353,93 @@ static FillStrokeInfo CollectFillStroke(const std::vector<Element*>& contents) {
     }
   }
   return info;
+}
+
+//==============================================================================
+// Layer and Group matrix builders (matching SVGExporter logic)
+//==============================================================================
+
+static Matrix BuildLayerMatrix(const Layer* layer) {
+  Matrix m = layer->matrix;
+  if (layer->x != 0.0f || layer->y != 0.0f) {
+    m = Matrix::Translate(layer->x, layer->y) * m;
+  }
+  return m;
+}
+
+static Matrix BuildGroupMatrix(const Group* group) {
+  bool hasAnchor = !FloatNearlyZero(group->anchor.x) || !FloatNearlyZero(group->anchor.y);
+  bool hasPosition = !FloatNearlyZero(group->position.x) || !FloatNearlyZero(group->position.y);
+  bool hasRotation = !FloatNearlyZero(group->rotation);
+  bool hasScale =
+      !FloatNearlyZero(group->scale.x - 1.0f) || !FloatNearlyZero(group->scale.y - 1.0f);
+  bool hasSkew = !FloatNearlyZero(group->skew);
+
+  if (!hasAnchor && !hasPosition && !hasRotation && !hasScale && !hasSkew) {
+    return {};
+  }
+
+  Matrix m = {};
+  if (hasAnchor) {
+    m = Matrix::Translate(-group->anchor.x, -group->anchor.y);
+  }
+  if (hasScale) {
+    m = Matrix::Scale(group->scale.x, group->scale.y) * m;
+  }
+  if (hasSkew) {
+    m = Matrix::Rotate(group->skewAxis) * m;
+    Matrix shear = {};
+    shear.c = std::tan(DegreesToRadians(group->skew));
+    m = shear * m;
+    m = Matrix::Rotate(-group->skewAxis) * m;
+  }
+  if (hasRotation) {
+    m = Matrix::Rotate(group->rotation) * m;
+  }
+  if (hasPosition) {
+    m = Matrix::Translate(group->position.x, group->position.y) * m;
+  }
+
+  return m;
+}
+
+//==============================================================================
+// Transform rect helper – applies accumulated matrix to a local bounding box
+//==============================================================================
+
+struct TransformedRect {
+  float x;
+  float y;
+  float width;
+  float height;
+  float rotationDeg;
+};
+
+static TransformedRect ApplyMatrixToRect(float localX, float localY, float localW, float localH,
+                                         const Matrix& m) {
+  float cx = localX + localW / 2.0f;
+  float cy = localY + localH / 2.0f;
+  Point mappedCenter = m.mapPoint({cx, cy});
+
+  float scaleX = std::sqrt(m.a * m.a + m.b * m.b);
+  float scaleY = std::sqrt(m.c * m.c + m.d * m.d);
+  float det = m.a * m.d - m.b * m.c;
+  if (det < 0) {
+    scaleY = -scaleY;
+  }
+
+  float rotDeg = std::atan2(m.b, m.a) * 180.0f / 3.14159265358979323846f;
+
+  float sw = localW * scaleX;
+  float sh = localH * std::abs(scaleY);
+
+  TransformedRect result;
+  result.x = mappedCenter.x - sw / 2.0f;
+  result.y = mappedCenter.y - sh / 2.0f;
+  result.width = sw;
+  result.height = sh;
+  result.rotationDeg = rotDeg;
+  return result;
 }
 
 //==============================================================================
@@ -724,9 +812,10 @@ class PPTSlideWriter {
 
     // Write all layers into this single slide
     for (const auto* layer : layers) {
-      writeLayerContents(xml, layer, 0.0f, 0.0f);
+      Matrix layerMatrix = BuildLayerMatrix(layer);
+      writeLayerContents(xml, layer, layerMatrix);
       for (const auto* child : layer->children) {
-        writeLayerAsShapes(xml, child, layer->x, layer->y);
+        writeLayerAsShapes(xml, child, layerMatrix);
       }
     }
 
@@ -1155,17 +1244,15 @@ class PPTSlideWriter {
 
   // ── Shape writers ─────────────────────────────────────────────────────────
   void writeRectangle(XMLBuilder& out, const Rectangle* rect, const FillStrokeInfo& fs,
-                      float offX, float offY) {
-    float x = rect->position.x - rect->size.width / 2 + offX;
-    float y = rect->position.y - rect->size.height / 2 + offY;
-    float w = rect->size.width;
-    float h = rect->size.height;
+                      const Matrix& transform) {
+    float localX = rect->position.x - rect->size.width / 2;
+    float localY = rect->position.y - rect->size.height / 2;
+    auto tr = ApplyMatrixToRect(localX, localY, rect->size.width, rect->size.height, transform);
 
     int id = allocShapeId();
     out.openElement("p:sp");
     out.closeElementStart();
 
-    // Non-visual properties
     out.openElement("p:nvSpPr");
     out.closeElementStart();
     out.openElement("p:cNvPr");
@@ -1178,12 +1265,13 @@ class PPTSlideWriter {
     out.closeElementSelfClosing();
     out.closeElement();
 
-    // Shape properties
     out.openElement("p:spPr");
     out.closeElementStart();
-    writeXfrm(out, PixelsToEMU(x), PixelsToEMU(y), PixelsToEMU(w), PixelsToEMU(h));
+    int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
+              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     if (rect->roundness > 0) {
-      writeRoundRectGeom(out, rect->roundness, w, h);
+      writeRoundRectGeom(out, rect->roundness, rect->size.width, rect->size.height);
     } else {
       writePresetGeom(out, "rect");
     }
@@ -1195,11 +1283,11 @@ class PPTSlideWriter {
   }
 
   void writeEllipse(XMLBuilder& out, const Ellipse* ellipse, const FillStrokeInfo& fs,
-                    float offX, float offY) {
-    float rx = ellipse->size.width / 2;
-    float ry = ellipse->size.height / 2;
-    float x = ellipse->position.x - rx + offX;
-    float y = ellipse->position.y - ry + offY;
+                    const Matrix& transform) {
+    float localX = ellipse->position.x - ellipse->size.width / 2;
+    float localY = ellipse->position.y - ellipse->size.height / 2;
+    auto tr = ApplyMatrixToRect(localX, localY, ellipse->size.width, ellipse->size.height,
+                                transform);
 
     int id = allocShapeId();
     out.openElement("p:sp");
@@ -1219,8 +1307,9 @@ class PPTSlideWriter {
 
     out.openElement("p:spPr");
     out.closeElementStart();
-    writeXfrm(out, PixelsToEMU(x), PixelsToEMU(y),
-              PixelsToEMU(ellipse->size.width), PixelsToEMU(ellipse->size.height));
+    int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
+              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     writePresetGeom(out, "ellipse");
     writeFillProperties(out, fs.fill);
     writeStrokeProperties(out, fs.stroke);
@@ -1229,8 +1318,8 @@ class PPTSlideWriter {
     out.closeElement();
   }
 
-  void writePath(XMLBuilder& out, const Path* path, const FillStrokeInfo& fs, float offX,
-                 float offY) {
+  void writePath(XMLBuilder& out, const Path* path, const FillStrokeInfo& fs,
+                 const Matrix& transform) {
     if (!path->data || path->data->isEmpty()) {
       return;
     }
@@ -1239,8 +1328,7 @@ class PPTSlideWriter {
       return;
     }
 
-    float x = bounds.x + offX;
-    float y = bounds.y + offY;
+    auto tr = ApplyMatrixToRect(bounds.x, bounds.y, bounds.width, bounds.height, transform);
 
     int id = allocShapeId();
     out.openElement("p:sp");
@@ -1260,8 +1348,9 @@ class PPTSlideWriter {
 
     out.openElement("p:spPr");
     out.closeElementStart();
-    writeXfrm(out, PixelsToEMU(x), PixelsToEMU(y),
-              PixelsToEMU(bounds.width), PixelsToEMU(bounds.height));
+    int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
+              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     writeCustomGeometry(out, path->data, bounds);
     writeFillProperties(out, fs.fill);
     writeStrokeProperties(out, fs.stroke);
@@ -1270,26 +1359,28 @@ class PPTSlideWriter {
     out.closeElement();
   }
 
-  void writeText(XMLBuilder& out, const Text* text, const FillStrokeInfo& fs, float offX,
-                 float offY) {
+  void writeText(XMLBuilder& out, const Text* text, const FillStrokeInfo& fs,
+                 const Matrix& transform) {
     if (text->text.empty()) {
       return;
     }
 
-    float x, y, w, h;
+    float localX, localY, localW, localH;
     if (fs.textBox && fs.textBox->size.width > 0 && fs.textBox->size.height > 0) {
-      x = fs.textBox->position.x + offX;
-      y = fs.textBox->position.y + offY;
-      w = fs.textBox->size.width;
-      h = fs.textBox->size.height;
+      localX = fs.textBox->position.x;
+      localY = fs.textBox->position.y;
+      localW = fs.textBox->size.width;
+      localH = fs.textBox->size.height;
     } else {
       float estimatedWidth = static_cast<float>(text->text.size()) * text->fontSize * 0.6f;
       float estimatedHeight = text->fontSize * 1.5f;
-      x = text->position.x + offX;
-      y = text->position.y - text->fontSize + offY;
-      w = std::max(estimatedWidth, text->fontSize * 2.0f);
-      h = estimatedHeight;
+      localX = text->position.x;
+      localY = text->position.y - text->fontSize;
+      localW = std::max(estimatedWidth, text->fontSize * 2.0f);
+      localH = estimatedHeight;
     }
+
+    auto tr = ApplyMatrixToRect(localX, localY, localW, localH, transform);
 
     int id = allocShapeId();
     out.openElement("p:sp");
@@ -1310,7 +1401,9 @@ class PPTSlideWriter {
 
     out.openElement("p:spPr");
     out.closeElementStart();
-    writeXfrm(out, PixelsToEMU(x), PixelsToEMU(y), PixelsToEMU(w), PixelsToEMU(h));
+    int64_t rot = FloatNearlyZero(tr.rotationDeg) ? 0 : DegreesToPPTRotation(tr.rotationDeg);
+    writeXfrm(out, PixelsToEMU(tr.x), PixelsToEMU(tr.y),
+              PixelsToEMU(tr.width), PixelsToEMU(tr.height), rot);
     writePresetGeom(out, "rect");
     out.openElement("a:noFill");
     out.closeElementSelfClosing();
@@ -1434,9 +1527,9 @@ class PPTSlideWriter {
   }
 
   // ── Group shape ───────────────────────────────────────────────────────────
-  void writeGroup(XMLBuilder& out, const Group* group, float offX, float offY) {
-    float groupOffX = group->position.x - group->anchor.x + offX;
-    float groupOffY = group->position.y - group->anchor.y + offY;
+  void writeGroup(XMLBuilder& out, const Group* group, const Matrix& parentTransform) {
+    Matrix groupMatrix = BuildGroupMatrix(group);
+    Matrix accumulated = parentTransform * groupMatrix;
 
     auto fs = CollectFillStroke(group->elements);
     bool hasGeometry = false;
@@ -1453,7 +1546,6 @@ class PPTSlideWriter {
       return;
     }
 
-    // Write each element in the group at the group's offset
     for (const auto* elem : group->elements) {
       auto t = elem->nodeType();
       if (t == NodeType::Fill || t == NodeType::Stroke || t == NodeType::TextBox) {
@@ -1461,19 +1553,19 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, groupOffX, groupOffY);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, accumulated);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, groupOffX, groupOffY);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, accumulated);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, groupOffX, groupOffY);
+          writePath(out, static_cast<const Path*>(elem), fs, accumulated);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, groupOffX, groupOffY);
+          writeText(out, static_cast<const Text*>(elem), fs, accumulated);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), groupOffX, groupOffY);
+          writeGroup(out, static_cast<const Group*>(elem), accumulated);
           break;
         default:
           break;
@@ -1482,7 +1574,7 @@ class PPTSlideWriter {
   }
 
   // ── Layer content writing ─────────────────────────────────────────────────
-  void writeLayerContents(XMLBuilder& out, const Layer* layer, float offX, float offY) {
+  void writeLayerContents(XMLBuilder& out, const Layer* layer, const Matrix& transform) {
     auto fs = CollectFillStroke(layer->contents);
 
     for (const auto* elem : layer->contents) {
@@ -1492,19 +1584,19 @@ class PPTSlideWriter {
       }
       switch (t) {
         case NodeType::Rectangle:
-          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, offX, offY);
+          writeRectangle(out, static_cast<const Rectangle*>(elem), fs, transform);
           break;
         case NodeType::Ellipse:
-          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, offX, offY);
+          writeEllipse(out, static_cast<const Ellipse*>(elem), fs, transform);
           break;
         case NodeType::Path:
-          writePath(out, static_cast<const Path*>(elem), fs, offX, offY);
+          writePath(out, static_cast<const Path*>(elem), fs, transform);
           break;
         case NodeType::Text:
-          writeText(out, static_cast<const Text*>(elem), fs, offX, offY);
+          writeText(out, static_cast<const Text*>(elem), fs, transform);
           break;
         case NodeType::Group:
-          writeGroup(out, static_cast<const Group*>(elem), offX, offY);
+          writeGroup(out, static_cast<const Group*>(elem), transform);
           break;
         default:
           break;
@@ -1512,17 +1604,16 @@ class PPTSlideWriter {
     }
   }
 
-  void writeLayerAsShapes(XMLBuilder& out, const Layer* layer, float parentOffX,
-                          float parentOffY) {
+  void writeLayerAsShapes(XMLBuilder& out, const Layer* layer, const Matrix& parentTransform) {
     if (!layer->visible) {
       return;
     }
-    float offX = parentOffX + layer->x + layer->matrix.tx;
-    float offY = parentOffY + layer->y + layer->matrix.ty;
+    Matrix layerMatrix = BuildLayerMatrix(layer);
+    Matrix accumulated = parentTransform * layerMatrix;
 
-    writeLayerContents(out, layer, offX, offY);
+    writeLayerContents(out, layer, accumulated);
     for (const auto* child : layer->children) {
-      writeLayerAsShapes(out, child, offX, offY);
+      writeLayerAsShapes(out, child, accumulated);
     }
   }
 };
