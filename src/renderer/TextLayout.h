@@ -26,9 +26,24 @@
 #include "VerticalTextUtils.h"
 #include "pagx/PAGXDocument.h"
 #include "tgfx/core/Font.h"
+#include "tgfx/core/GlyphRun.h"
 #include "tgfx/core/Typeface.h"
 
 namespace pagx {
+
+struct PositionedGlyphRun {
+  tgfx::Font font = {};
+  std::vector<tgfx::GlyphID> glyphIDs = {};
+  tgfx::GlyphPositioning positioning = tgfx::GlyphPositioning::Point;
+  std::vector<float> positions = {};
+  float x = 0;
+  float y = 0;
+};
+
+struct PositionedText {
+  std::vector<PositionedGlyphRun> runs = {};
+  std::vector<tgfx::Point> anchors = {};
+};
 
 /**
  * Holds font location info and creates the Typeface on demand. Once created, the Typeface is
@@ -218,11 +233,11 @@ class TextLayoutContext {
 
   void processTextWithoutLayout(Text* text);
 
-  void buildTextBlobWithoutLayoutSingleLine(Text* text, const ShapedInfo& info);
+  PositionedText positionGlyphsSingleLine(Text* text, const ShapedInfo& info);
 
-  void buildTextBlobWithoutLayoutMultiLine(Text* text, const ShapedInfo& info);
+  PositionedText positionGlyphsMultiLine(Text* text, const ShapedInfo& info);
 
-  ShapedText buildShapedTextFromEmbeddedGlyphRuns(const Text* text);
+  PositionedText positionEmbeddedGlyphRuns(const Text* text);
 
   std::shared_ptr<tgfx::Typeface> buildTypefaceFromFont(const Font* fontNode);
 
@@ -237,8 +252,8 @@ class TextLayoutContext {
 
   static void FinishLine(LineInfo* line, float lineHeight, float newlineFontLineHeight);
 
-  void buildTextBlobWithLayout(const TextBox* textBox, const std::vector<LineInfo>& lines,
-                               bool paragraphRTL = false);
+  std::unordered_map<Text*, PositionedText> positionGlyphsWithLayout(
+      const TextBox* textBox, const std::vector<LineInfo>& lines, bool paragraphRTL = false);
 
   static void RemoveTrailingLetterSpacing(std::vector<VerticalGlyphInfo>& glyphs);
 
@@ -253,7 +268,10 @@ class TextLayoutContext {
   static void ApplyPunctuationSquashToColumns(std::vector<ColumnInfo>& columns);
 #endif
 
-  void buildTextBlobVertical(const TextBox* textBox, const std::vector<ColumnInfo>& columns);
+  std::unordered_map<Text*, PositionedText> positionGlyphsVertical(
+      const TextBox* textBox, const std::vector<ColumnInfo>& columns);
+
+  static ShapedText BuildShapedText(const PositionedText& positionedText);
 
   std::shared_ptr<tgfx::Typeface> findTypeface(const std::string& fontFamily,
                                                const std::string& fontStyle);
