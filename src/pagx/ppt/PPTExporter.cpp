@@ -973,14 +973,6 @@ static void EmitPoint(XMLBuilder& out, const char* tag, float x, float y, float 
   out.end();
 }
 
-static void EmitQuadBezTo(XMLBuilder& out, const char* tag, float x0, float y0, float x1, float y1,
-                          float ofsX, float ofsY) {
-  out.open(tag).gt();
-  out.open("a:pt").a("x", PxToEMU(x0 - ofsX)).a("y", PxToEMU(y0 - ofsY)).sc();
-  out.open("a:pt").a("x", PxToEMU(x1 - ofsX)).a("y", PxToEMU(y1 - ofsY)).sc();
-  out.end();
-}
-
 static void EmitCubicBezTo(XMLBuilder& out, float x0, float y0, float x1, float y1, float x2,
                            float y2, float ofsX, float ofsY) {
   out.open("a:cubicBezTo").gt();
@@ -1003,31 +995,46 @@ void PPTWriter::writeCustomGeom(XMLBuilder& out, const PathData* data, float ofs
   int64_t pw = std::max(int64_t(1), PxToEMU(boundsW * coordScaleX));
   int64_t ph = std::max(int64_t(1), PxToEMU(boundsH * coordScaleY));
 
-  out.open("a:pathLst").gt();
-  out.open("a:path").a("w", pw).a("h", ph).gt();
-
   float sOfsX = ofsX * coordScaleX;
   float sOfsY = ofsY * coordScaleY;
   float csX = coordScaleX;
   float csY = coordScaleY;
 
+  out.open("a:pathLst").gt();
+  out.open("a:path").a("w", pw).a("h", ph).gt();
+
   if (fillRule == FillRule::EvenOdd) {
     auto contours = BuildEvenOddContours(data);
 
     for (const auto& c : contours) {
-      EmitPoint(out, "a:moveTo", c.start.x * csX, c.start.y * csY, sOfsX, sOfsY);
+      float curX = c.start.x * csX;
+      float curY = c.start.y * csY;
+      EmitPoint(out, "a:moveTo", curX, curY, sOfsX, sOfsY);
       for (const auto& s : c.segs) {
         switch (s.verb) {
           case PathVerb::Line:
-            EmitPoint(out, "a:lnTo", s.pts[0].x * csX, s.pts[0].y * csY, sOfsX, sOfsY);
+            curX = s.pts[0].x * csX;
+            curY = s.pts[0].y * csY;
+            EmitPoint(out, "a:lnTo", curX, curY, sOfsX, sOfsY);
             break;
-          case PathVerb::Quad:
-            EmitQuadBezTo(out, "a:quadBezTo", s.pts[0].x * csX, s.pts[0].y * csY, s.pts[1].x * csX,
-                          s.pts[1].y * csY, sOfsX, sOfsY);
+          case PathVerb::Quad: {
+            float qx = s.pts[0].x * csX;
+            float qy = s.pts[0].y * csY;
+            float endX = s.pts[1].x * csX;
+            float endY = s.pts[1].y * csY;
+            EmitCubicBezTo(out, curX + 2.0f / 3.0f * (qx - curX),
+                           curY + 2.0f / 3.0f * (qy - curY),
+                           endX + 2.0f / 3.0f * (qx - endX),
+                           endY + 2.0f / 3.0f * (qy - endY), endX, endY, sOfsX, sOfsY);
+            curX = endX;
+            curY = endY;
             break;
+          }
           case PathVerb::Cubic:
             EmitCubicBezTo(out, s.pts[0].x * csX, s.pts[0].y * csY, s.pts[1].x * csX,
                            s.pts[1].y * csY, s.pts[2].x * csX, s.pts[2].y * csY, sOfsX, sOfsY);
+            curX = s.pts[2].x * csX;
+            curY = s.pts[2].y * csY;
             break;
           default:
             break;
@@ -1038,21 +1045,36 @@ void PPTWriter::writeCustomGeom(XMLBuilder& out, const PathData* data, float ofs
       }
     }
   } else {
+    float curX = 0, curY = 0;
     data->forEach([&](PathVerb verb, const Point* pts) {
       switch (verb) {
         case PathVerb::Move:
-          EmitPoint(out, "a:moveTo", pts[0].x * csX, pts[0].y * csY, sOfsX, sOfsY);
+          curX = pts[0].x * csX;
+          curY = pts[0].y * csY;
+          EmitPoint(out, "a:moveTo", curX, curY, sOfsX, sOfsY);
           break;
         case PathVerb::Line:
-          EmitPoint(out, "a:lnTo", pts[0].x * csX, pts[0].y * csY, sOfsX, sOfsY);
+          curX = pts[0].x * csX;
+          curY = pts[0].y * csY;
+          EmitPoint(out, "a:lnTo", curX, curY, sOfsX, sOfsY);
           break;
-        case PathVerb::Quad:
-          EmitQuadBezTo(out, "a:quadBezTo", pts[0].x * csX, pts[0].y * csY, pts[1].x * csX,
-                        pts[1].y * csY, sOfsX, sOfsY);
+        case PathVerb::Quad: {
+          float qx = pts[0].x * csX;
+          float qy = pts[0].y * csY;
+          float endX = pts[1].x * csX;
+          float endY = pts[1].y * csY;
+          EmitCubicBezTo(out, curX + 2.0f / 3.0f * (qx - curX),
+                         curY + 2.0f / 3.0f * (qy - curY), endX + 2.0f / 3.0f * (qx - endX),
+                         endY + 2.0f / 3.0f * (qy - endY), endX, endY, sOfsX, sOfsY);
+          curX = endX;
+          curY = endY;
           break;
+        }
         case PathVerb::Cubic:
           EmitCubicBezTo(out, pts[0].x * csX, pts[0].y * csY, pts[1].x * csX, pts[1].y * csY,
                          pts[2].x * csX, pts[2].y * csY, sOfsX, sOfsY);
+          curX = pts[2].x * csX;
+          curY = pts[2].y * csY;
           break;
         case PathVerb::Close:
           out.open("a:close").sc();
