@@ -896,8 +896,9 @@ static bool PointInsideContour(const Point& pt, const PathContour& contour) {
 
 // Parses path data into contours and adjusts winding directions so that
 // PowerPoint's non-zero winding rule produces the same result as even-odd fill.
-// Uses containment depth to correctly handle multiple independent outer contours
-// (e.g. separate strokes in CJK glyphs).
+// Each contour is later emitted as a separate a:path element so that mobile
+// PowerPoint renderers that cannot handle multiple sub-paths within a single
+// a:path can still produce correct hollow effects via multi-path overlay.
 static std::vector<PathContour> BuildEvenOddContours(const PathData* data) {
   std::vector<PathContour> contours;
   data->forEach([&](PathVerb verb, const Point* pts) {
@@ -1001,50 +1002,96 @@ void PPTWriter::writeCustomGeom(XMLBuilder& out, const PathData* data, float ofs
   float csY = coordScaleY;
 
   out.open("a:pathLst").gt();
-  out.open("a:path").a("w", pw).a("h", ph).gt();
 
   if (fillRule == FillRule::EvenOdd) {
+    // Merge all contours into a single compound path connected by zero-width
+    // bridge lines.  BuildEvenOddContours() adjusts winding so inner contours
+    // wind opposite to outer ones; with non-zero winding the bridged regions
+    // between outer and inner boundaries cancel to winding-number 0, producing
+    // correct holes without relying on sub-path fill rules or multi-path
+    // even-odd combining (which some mobile renderers do not support).
     auto contours = BuildEvenOddContours(data);
 
-    for (const auto& c : contours) {
-      float curX = c.start.x * csX;
-      float curY = c.start.y * csY;
-      EmitPoint(out, "a:moveTo", curX, curY, sOfsX, sOfsY);
-      for (const auto& s : c.segs) {
+    out.open("a:path").a("w", pw).a("h", ph).gt();
+    if (!contours.empty()) {
+      auto emitSeg = [&](const PathSeg& s, float& cx, float& cy) {
         switch (s.verb) {
           case PathVerb::Line:
-            curX = s.pts[0].x * csX;
-            curY = s.pts[0].y * csY;
-            EmitPoint(out, "a:lnTo", curX, curY, sOfsX, sOfsY);
+            cx = s.pts[0].x * csX;
+            cy = s.pts[0].y * csY;
+            EmitPoint(out, "a:lnTo", cx, cy, sOfsX, sOfsY);
             break;
           case PathVerb::Quad: {
             float qx = s.pts[0].x * csX;
             float qy = s.pts[0].y * csY;
-            float endX = s.pts[1].x * csX;
-            float endY = s.pts[1].y * csY;
-            EmitCubicBezTo(out, curX + 2.0f / 3.0f * (qx - curX),
-                           curY + 2.0f / 3.0f * (qy - curY),
-                           endX + 2.0f / 3.0f * (qx - endX),
-                           endY + 2.0f / 3.0f * (qy - endY), endX, endY, sOfsX, sOfsY);
-            curX = endX;
-            curY = endY;
+            float ex = s.pts[1].x * csX;
+            float ey = s.pts[1].y * csY;
+            EmitCubicBezTo(out, cx + 2.0f / 3.0f * (qx - cx), cy + 2.0f / 3.0f * (qy - cy),
+                           ex + 2.0f / 3.0f * (qx - ex), ey + 2.0f / 3.0f * (qy - ey), ex, ey,
+                           sOfsX, sOfsY);
+            cx = ex;
+            cy = ey;
             break;
           }
           case PathVerb::Cubic:
             EmitCubicBezTo(out, s.pts[0].x * csX, s.pts[0].y * csY, s.pts[1].x * csX,
                            s.pts[1].y * csY, s.pts[2].x * csX, s.pts[2].y * csY, sOfsX, sOfsY);
-            curX = s.pts[2].x * csX;
-            curY = s.pts[2].y * csY;
+            cx = s.pts[2].x * csX;
+            cy = s.pts[2].y * csY;
             break;
           default:
             break;
         }
+      };
+
+      const auto& outer = contours[0];
+      float curX = outer.start.x * csX;
+      float curY = outer.start.y * csY;
+      EmitPoint(out, "a:moveTo", curX, curY, sOfsX, sOfsY);
+      for (const auto& s : outer.segs) {
+        emitSeg(s, curX, curY);
       }
-      if (c.closed) {
+
+      if (contours.size() > 1) {
+        float bx = curX;
+        float by = curY;
+
+        for (size_t i = 1; i < contours.size(); i++) {
+          const auto& hole = contours[i];
+          float hsx = hole.start.x * csX;
+          float hsy = hole.start.y * csY;
+
+          // Bridge IN
+          EmitPoint(out, "a:lnTo", hsx, hsy, sOfsX, sOfsY);
+          curX = hsx;
+          curY = hsy;
+
+          // Trace hole contour
+          for (const auto& s : hole.segs) {
+            emitSeg(s, curX, curY);
+          }
+
+          // Explicit close of hole (line back to hole start if not already there)
+          if (hole.closed) {
+            EmitPoint(out, "a:lnTo", hsx, hsy, sOfsX, sOfsY);
+            curX = hsx;
+            curY = hsy;
+          }
+
+          // Bridge OUT
+          EmitPoint(out, "a:lnTo", bx, by, sOfsX, sOfsY);
+          curX = bx;
+          curY = by;
+        }
+      }
+
+      if (outer.closed) {
         out.open("a:close").sc();
       }
     }
+    out.end();  // a:path
   } else {
+    out.open("a:path").a("w", pw).a("h", ph).gt();
     float curX = 0, curY = 0;
     data->forEach([&](PathVerb verb, const Point* pts) {
       switch (verb) {
@@ -1063,9 +1110,9 @@ void PPTWriter::writeCustomGeom(XMLBuilder& out, const PathData* data, float ofs
           float qy = pts[0].y * csY;
           float endX = pts[1].x * csX;
           float endY = pts[1].y * csY;
-          EmitCubicBezTo(out, curX + 2.0f / 3.0f * (qx - curX),
-                         curY + 2.0f / 3.0f * (qy - curY), endX + 2.0f / 3.0f * (qx - endX),
-                         endY + 2.0f / 3.0f * (qy - endY), endX, endY, sOfsX, sOfsY);
+          EmitCubicBezTo(out, curX + 2.0f / 3.0f * (qx - curX), curY + 2.0f / 3.0f * (qy - curY),
+                         endX + 2.0f / 3.0f * (qx - endX), endY + 2.0f / 3.0f * (qy - endY), endX,
+                         endY, sOfsX, sOfsY);
           curX = endX;
           curY = endY;
           break;
@@ -1081,9 +1128,9 @@ void PPTWriter::writeCustomGeom(XMLBuilder& out, const PathData* data, float ofs
           break;
       }
     });
+    out.end();  // a:path
   }
 
-  out.end();  // a:path
   out.end();  // a:pathLst
   out.end();  // a:custGeom
 }
@@ -1201,9 +1248,9 @@ void PPTWriter::writeTextAsPath(XMLBuilder& out, const Text* text, const FillStr
     auto xf = decomposeXform(localBounds.x, localBounds.y, localBounds.width, localBounds.height,
                              combinedMatrix);
     beginShape(out, "Glyph", xf.offX, xf.offY, xf.extCX, xf.extCY, xf.rotation);
-    // Font glyph outlines are designed for even-odd fill rule. Always use EvenOdd here
-    // to reverse inner contours' winding direction via BuildEvenOddContours(), ensuring
-    // correct rendering on viewers that use non-zero winding rule (e.g. some mobile apps).
+    // Font glyph outlines use even-odd fill rule.  Passing EvenOdd triggers the
+    // compound-path-with-bridges codepath in writeCustomGeom, which merges all
+    // contours into a single closed path connected by zero-width bridge lines.
     FillRule fillRule = FillRule::EvenOdd;
 
     float sx = std::sqrt(combinedMatrix.a * combinedMatrix.a + combinedMatrix.b * combinedMatrix.b);
