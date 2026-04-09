@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1235,38 +1236,210 @@ void PPTWriter::writeTextAsPath(XMLBuilder& out, const Text* text, const FillStr
     return;
   }
 
+  // Merge all glyph paths into a single compound shape to guarantee baseline
+  // alignment.  Per-glyph shapes suffer from independent EMU rounding of offY
+  // and extCY, which causes visible baseline jitter on some mobile renderers.
+  std::vector<PathContour> allContours;
   for (const auto& gp : glyphPaths) {
     if (!gp.pathData || gp.pathData->isEmpty()) {
       continue;
     }
-    Rect localBounds = const_cast<PathData*>(gp.pathData)->getBounds();
-    if (localBounds.isEmpty()) {
-      continue;
-    }
-
-    Matrix combinedMatrix = m * gp.transform;
-    auto xf = decomposeXform(localBounds.x, localBounds.y, localBounds.width, localBounds.height,
-                             combinedMatrix);
-    beginShape(out, "Glyph", xf.offX, xf.offY, xf.extCX, xf.extCY, xf.rotation);
-    // Font glyph outlines use even-odd fill rule.  Passing EvenOdd triggers the
-    // compound-path-with-bridges codepath in writeCustomGeom, which merges all
-    // contours into a single closed path connected by zero-width bridge lines.
-    FillRule fillRule = FillRule::EvenOdd;
-
-    float sx = std::sqrt(combinedMatrix.a * combinedMatrix.a + combinedMatrix.b * combinedMatrix.b);
-    float det = combinedMatrix.a * combinedMatrix.d - combinedMatrix.b * combinedMatrix.c;
-    float sy = (sx > 0) ? std::abs(det) / sx : 0;
-    if (sx <= 0) sx = 1.0f;
-    if (sy <= 0) sy = 1.0f;
-
-    writeCustomGeom(out, gp.pathData, localBounds.x, localBounds.y, localBounds.width,
-                    localBounds.height, fillRule, sx, sy);
-    writeFill(out, fs.fill, alpha);
-    out.open("a:ln").gt();
-    out.open("a:noFill").sc();
-    out.end();
-    endShape(out);
+    const auto& t = gp.transform;
+    auto txPt = [&](const Point& p) -> Point {
+      return {t.a * p.x + t.c * p.y + t.tx, t.b * p.x + t.d * p.y + t.ty};
+    };
+    gp.pathData->forEach([&](PathVerb verb, const Point* pts) {
+      if (verb == PathVerb::Move) {
+        PathContour c;
+        c.start = txPt(pts[0]);
+        allContours.push_back(std::move(c));
+      } else if (!allContours.empty()) {
+        if (verb == PathVerb::Close) {
+          allContours.back().closed = true;
+        } else {
+          PathSeg seg;
+          seg.verb = verb;
+          int ptCount = PathData::PointsPerVerb(verb);
+          for (int i = 0; i < ptCount; i++) {
+            seg.pts[i] = txPt(pts[i]);
+          }
+          allContours.back().segs.push_back(seg);
+        }
+      }
+    });
   }
+
+  if (allContours.empty()) {
+    return;
+  }
+
+  float minX = std::numeric_limits<float>::max();
+  float minY = std::numeric_limits<float>::max();
+  float maxX = std::numeric_limits<float>::lowest();
+  float maxY = std::numeric_limits<float>::lowest();
+  for (const auto& contour : allContours) {
+    auto updateBounds = [&](const Point& p) {
+      minX = std::min(minX, p.x);
+      minY = std::min(minY, p.y);
+      maxX = std::max(maxX, p.x);
+      maxY = std::max(maxY, p.y);
+    };
+    updateBounds(contour.start);
+    for (const auto& seg : contour.segs) {
+      int n = PathData::PointsPerVerb(seg.verb);
+      for (int i = 0; i < n; i++) {
+        updateBounds(seg.pts[i]);
+      }
+    }
+  }
+
+  if (maxX <= minX || maxY <= minY) {
+    return;
+  }
+
+  // Even-odd winding adjustment: ensure outer contours (depth 0) share the
+  // same winding direction and inner contours (depth 1, e.g. holes in "O")
+  // wind the opposite way.  Non-zero winding fill then produces correct
+  // hollow effects via the bridge-based compound path below.
+  if (allContours.size() > 1) {
+    std::vector<int> depths(allContours.size(), 0);
+    for (size_t i = 0; i < allContours.size(); i++) {
+      for (size_t j = 0; j < allContours.size(); j++) {
+        if (i == j || !allContours[j].closed || allContours[j].segs.empty()) {
+          continue;
+        }
+        if (PointInsideContour(allContours[i].start, allContours[j])) {
+          depths[i]++;
+        }
+      }
+    }
+    int refSign = 0;
+    for (size_t i = 0; i < allContours.size(); i++) {
+      if (depths[i] == 0 && allContours[i].closed && !allContours[i].segs.empty()) {
+        refSign = (ComputeSignedArea(allContours[i]) >= 0) ? 1 : -1;
+        break;
+      }
+    }
+    if (refSign == 0) {
+      refSign = (ComputeSignedArea(allContours[0]) >= 0) ? 1 : -1;
+    }
+    for (size_t i = 0; i < allContours.size(); i++) {
+      if (!allContours[i].closed || allContours[i].segs.empty()) {
+        continue;
+      }
+      float area = ComputeSignedArea(allContours[i]);
+      int currentSign = (area >= 0) ? 1 : -1;
+      int targetSign = (depths[i] % 2 == 0) ? refSign : -refSign;
+      if (currentSign != targetSign) {
+        ReverseContour(allContours[i]);
+      }
+    }
+  }
+
+  float boundsW = maxX - minX;
+  float boundsH = maxY - minY;
+
+  float sx = std::sqrt(m.a * m.a + m.b * m.b);
+  float det = m.a * m.d - m.b * m.c;
+  float sy = (sx > 0) ? std::abs(det) / sx : 0;
+  if (sx <= 0) sx = 1.0f;
+  if (sy <= 0) sy = 1.0f;
+
+  auto xf = decomposeXform(minX, minY, boundsW, boundsH, m);
+  beginShape(out, "Glyph", xf.offX, xf.offY, xf.extCX, xf.extCY, xf.rotation);
+
+  // Emit merged custom geometry with all contours connected by zero-width
+  // bridge lines, identical to the approach used in writeCustomGeom for EvenOdd.
+  out.open("a:custGeom").gt();
+  out.open("a:avLst").sc();
+  out.open("a:gdLst").sc();
+  out.open("a:ahLst").sc();
+  out.open("a:cxnLst").sc();
+  out.open("a:rect").a("l", "0").a("t", "0").a("r", "r").a("b", "b").sc();
+
+  int64_t pw = std::max(int64_t(1), PxToEMU(boundsW * sx));
+  int64_t ph = std::max(int64_t(1), PxToEMU(boundsH * sy));
+  float ofsX = minX * sx;
+  float ofsY = minY * sy;
+
+  out.open("a:pathLst").gt();
+  out.open("a:path").a("w", pw).a("h", ph).gt();
+
+  auto emitContourSeg = [&](const PathSeg& s, float& cx, float& cy) {
+    switch (s.verb) {
+      case PathVerb::Line:
+        cx = s.pts[0].x * sx;
+        cy = s.pts[0].y * sy;
+        EmitPoint(out, "a:lnTo", cx, cy, ofsX, ofsY);
+        break;
+      case PathVerb::Quad: {
+        float qx = s.pts[0].x * sx;
+        float qy = s.pts[0].y * sy;
+        float ex = s.pts[1].x * sx;
+        float ey = s.pts[1].y * sy;
+        EmitCubicBezTo(out, cx + 2.0f / 3.0f * (qx - cx), cy + 2.0f / 3.0f * (qy - cy),
+                       ex + 2.0f / 3.0f * (qx - ex), ey + 2.0f / 3.0f * (qy - ey), ex, ey, ofsX,
+                       ofsY);
+        cx = ex;
+        cy = ey;
+        break;
+      }
+      case PathVerb::Cubic:
+        EmitCubicBezTo(out, s.pts[0].x * sx, s.pts[0].y * sy, s.pts[1].x * sx, s.pts[1].y * sy,
+                       s.pts[2].x * sx, s.pts[2].y * sy, ofsX, ofsY);
+        cx = s.pts[2].x * sx;
+        cy = s.pts[2].y * sy;
+        break;
+      default:
+        break;
+    }
+  };
+
+  const auto& first = allContours[0];
+  float curX = first.start.x * sx;
+  float curY = first.start.y * sy;
+  EmitPoint(out, "a:moveTo", curX, curY, ofsX, ofsY);
+  for (const auto& s : first.segs) {
+    emitContourSeg(s, curX, curY);
+  }
+
+  if (allContours.size() > 1) {
+    float bx = curX;
+    float by = curY;
+    for (size_t i = 1; i < allContours.size(); i++) {
+      const auto& contour = allContours[i];
+      float hsx = contour.start.x * sx;
+      float hsy = contour.start.y * sy;
+      EmitPoint(out, "a:lnTo", hsx, hsy, ofsX, ofsY);
+      curX = hsx;
+      curY = hsy;
+      for (const auto& s : contour.segs) {
+        emitContourSeg(s, curX, curY);
+      }
+      if (contour.closed) {
+        EmitPoint(out, "a:lnTo", hsx, hsy, ofsX, ofsY);
+        curX = hsx;
+        curY = hsy;
+      }
+      EmitPoint(out, "a:lnTo", bx, by, ofsX, ofsY);
+      curX = bx;
+      curY = by;
+    }
+  }
+
+  if (first.closed) {
+    out.open("a:close").sc();
+  }
+
+  out.end();  // a:path
+  out.end();  // a:pathLst
+  out.end();  // a:custGeom
+
+  writeFill(out, fs.fill, alpha);
+  out.open("a:ln").gt();
+  out.open("a:noFill").sc();
+  out.end();
+  endShape(out);
 }
 
 void PPTWriter::writeNativeText(XMLBuilder& out, const Text* text, const FillStrokeInfo& fs,
