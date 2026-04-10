@@ -2049,6 +2049,9 @@ static bool AddZipString(zipFile zf, const char* name, const std::string& conten
 //==============================================================================
 
 bool PPTExporter::ToFile(PAGXDocument& doc, const std::string& filePath, const Options& options) {
+  if (!doc.isLayoutApplied()) {
+    doc.applyLayout();
+  }
   PPTWriterContext context;
   PPTWriter writer(&context, &doc, options.convertTextToPath, options.bakeMask,
                    options.bridgeContours);
