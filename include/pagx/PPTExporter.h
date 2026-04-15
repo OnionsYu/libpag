@@ -23,6 +23,8 @@
 
 namespace pagx {
 
+class FontConfig;
+
 /**
  * Export options for PPTExporter.
  */
@@ -59,6 +61,13 @@ struct PPTExportOptions {
    * value is true.
    */
   bool bridgeContours = true;
+
+  /**
+   * Optional FontConfig for text layout. When provided, registered and fallback fonts from the
+   * FontConfig are used for text shaping and measurement, producing accurate text bounding boxes.
+   * When nullptr, the exporter falls back to system fonts via platform-native font lookup.
+   */
+  FontConfig* fontConfig = nullptr;
 };
 
 /**
