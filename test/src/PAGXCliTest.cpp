@@ -1156,6 +1156,34 @@ CLI_TEST(PAGXCliTest, Import_UnknownFormatInference) {
   EXPECT_NE(ret, 0);
 }
 
+CLI_TEST(PAGXCliTest, Import_HtmlToPagx_Basic) {
+  auto htmlPath = TestResourcePath("import_basic.html");
+  auto outputPath = TempDir() + "/ImportHtml_Basic.pagx";
+  auto ret = CallRun(pagx::cli::RunImport, {"import", "--input", htmlPath, "--output", outputPath});
+  EXPECT_EQ(ret, 0);
+  EXPECT_TRUE(std::filesystem::exists(outputPath));
+  auto output = ReadFile(outputPath);
+  EXPECT_NE(output.find("<pagx"), std::string::npos);
+  EXPECT_NE(output.find("</pagx>"), std::string::npos);
+  // Verifies the cascaded text content survived the HTML→PAGX translation.
+  EXPECT_NE(output.find("Hello PAGX"), std::string::npos);
+  EXPECT_NE(output.find("#F8FAFC"), std::string::npos);
+  EXPECT_NE(output.find("layout=\"vertical\""), std::string::npos);
+  // Background+padding split: outer should have only painters, inner content layer carries
+  // the padding.
+  EXPECT_NE(output.find("name=\"content\""), std::string::npos);
+}
+
+CLI_TEST(PAGXCliTest, Import_HtmlToPagx_ForceFormat) {
+  auto htmlPath = TestResourcePath("import_basic.html");
+  auto outputPath = TempDir() + "/ImportHtml_ForceFormat.pagx";
+  auto ret = CallRun(pagx::cli::RunImport,
+                     {"import", "--format", "html", "--input", htmlPath, "--output", outputPath});
+  EXPECT_EQ(ret, 0);
+  auto output = ReadFile(outputPath);
+  EXPECT_NE(output.find("<pagx"), std::string::npos);
+}
+
 CLI_TEST(PAGXCliTest, Import_Help) {
   auto ret = CallRun(pagx::cli::RunImport, {"import", "--help"});
   EXPECT_EQ(ret, 0);

@@ -295,21 +295,25 @@ pagx font embed --file a.ttf --fallback "PingFang SC" --fallback b.otf input.pag
 
 ## pagx import
 
-Convert a file from another format (e.g. SVG) to a standalone PAGX file.
+Convert a file from another format (SVG or HTML) to a standalone PAGX file.
+The HTML path is **lossy** and accepts only the subset documented in
+`html-subset.md`; SVG conversion is structure-preserving.
 
 ```bash
 pagx import --input icon.svg                     # SVG to icon.pagx
 pagx import --input icon.svg --output out.pagx   # SVG to out.pagx
+pagx import --input draft.html --output ui.pagx  # HTML draft to PAGX
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--input <file>` | Input file to import (required) |
 | `--output <file>` | Output PAGX file (default: `<input>.pagx`) |
-| `--format <format>` | Force input format (`svg`; default: inferred from extension) |
+| `--format <format>` | Force input format (`svg`, `html`; default: inferred from extension) |
 | `--svg-no-expand-use` | Do not expand `<use>` references |
 | `--svg-flatten-transforms` | Flatten nested transforms into single matrices |
 | `--svg-preserve-unknown` | Preserve unsupported SVG elements as Unknown nodes |
+| `--html-preserve-unknown` | Keep unsupported HTML tags as empty Layers (default: drop with warning) |
 
 ---
 

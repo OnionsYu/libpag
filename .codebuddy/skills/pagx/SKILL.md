@@ -20,6 +20,7 @@ relevant reference:
 | `references/patterns.md` | Structural patterns for UI components, layouts, tables, charts, decorative effects | Read before generating |
 | `references/attributes.md` | Attribute defaults, enumerations, required attributes | As needed |
 | `references/cli.md` | CLI commands — `render`, `verify`, `format`, `layout`, `bounds`, `font info`, `font embed`, `import`, `export` | As needed |
+| `references/html-subset.md` | Allowed HTML/CSS subset for the `pagx import` HTML→PAGX path, and what gets dropped | Read before drafting in HTML |
 
 ---
 
@@ -60,6 +61,23 @@ description, reference image, or design intent.
 Before writing any PAGX code, read `references/guide.md` (spec rules, techniques,
 and especially §Common Pitfalls) and `references/patterns.md` (structural patterns
 for components and layouts). Read `references/attributes.md` as needed for attribute defaults.
+
+### Choosing a generation path
+
+For a brand-new design, you have two options:
+
+1. **HTML draft → import** (faster first draft). Author the layout in the
+   restricted HTML subset documented in `references/html-subset.md`, then run
+   `pagx import --input draft.html --output design.pagx`. Read the warnings the
+   importer prints (also in `design.pagx`'s parse errors). From here, continue
+   in PAGX (Step 4 polish on the converted file). Pick this when the design is
+   primarily flex-based UI (cards, lists, forms, tabs).
+2. **PAGX directly** (full control). Skip HTML and follow the four-step
+   workflow below from Step 1. Pick this when the design needs precise vector
+   geometry, gradients, or layout features outside the HTML subset.
+
+In both cases, the canonical artifact for review and publish is the `.pagx`
+file — never edit the HTML draft after the import.
 
 ### Task tracking
 
