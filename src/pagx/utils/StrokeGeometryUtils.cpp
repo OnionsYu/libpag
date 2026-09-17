@@ -52,7 +52,12 @@ void ApplyStrokeBoxInset(const Stroke* stroke, float& x, float& y, float& w, flo
   w -= inset * 2.0f;
   h -= inset * 2.0f;
   if (roundness) {
-    *roundness = std::max(0.0f, *roundness - inset);
+    // Offsetting a rounded rectangle changes its radius by the same signed amount. A sharp
+    // rectangle is the important exception: an outside stroke around a zero-radius corner stays
+    // mitered and must not acquire a synthetic round corner.
+    if (*roundness > 0.0f) {
+      *roundness = std::max(0.0f, *roundness - inset);
+    }
   }
 }
 

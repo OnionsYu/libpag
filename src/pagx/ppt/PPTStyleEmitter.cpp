@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 #include "pagx/nodes/ConicGradient.h"
@@ -28,11 +29,46 @@
 #include "pagx/nodes/RadialGradient.h"
 #include "pagx/nodes/SolidColor.h"
 #include "pagx/ppt/PPTWriter.h"
+#include "pagx/utils/ColorSpaceUtils.h"
 
 namespace pagx {
 
 using pag::FloatNearlyZero;
 using pag::RadiansToDegrees;
+
+namespace {
+
+struct GradientStopValue {
+  float offset = 0;
+  Color color = {};
+
+  bool operator<(const GradientStopValue& other) const {
+    return offset < other.offset;
+  }
+};
+
+Color SampleGradientColor(const std::vector<GradientStopValue>& stops, float position) {
+  if (position <= stops.front().offset) {
+    return stops.front().color;
+  }
+  if (position >= stops.back().offset) {
+    return stops.back().color;
+  }
+  for (size_t i = 1; i < stops.size(); ++i) {
+    if (position <= stops[i].offset) {
+      const auto& previous = stops[i - 1];
+      const auto& current = stops[i];
+      float span = current.offset - previous.offset;
+      if (FloatNearlyZero(span)) {
+        return current.color;
+      }
+      return LerpColor(previous.color, current.color, (position - previous.offset) / span);
+    }
+  }
+  return stops.back().color;
+}
+
+}  // namespace
 
 void PPTWriter::WriteBlip(XMLBuilder& out, const std::string& relId, float alpha) {
   out.openElement("a:blip").addRequiredAttribute("r:embed", relId);
@@ -101,7 +137,8 @@ void PPTWriter::writePicture(XMLBuilder& out, const std::string& relId, int64_t 
 // ── ImagePattern as p:pic element ──────────────────────────────────────────
 
 bool PPTWriter::writeImagePatternAsPicture(XMLBuilder& out, const Fill* fill,
-                                           const Rect& shapeBounds, const Matrix& m, float alpha) {
+                                           const Rect& shapeBounds, const Matrix& m, float alpha,
+                                           bool rectangularClip) {
   if (!fill || !fill->color || fill->color->nodeType() != NodeType::ImagePattern) {
     return false;
   }
@@ -125,6 +162,23 @@ bool PPTWriter::writeImagePatternAsPicture(XMLBuilder& out, const Fill* fill,
 
   ImagePatternRect ipr = {};
   if (!ComputeImagePatternRect(pattern, imgW, imgH, shapeBounds, &ipr)) {
+    return false;
+  }
+
+  // A standalone p:pic always has rectangular geometry. It is therefore safe only for a sharp
+  // rectangular host. Rounded rectangles, ellipses, and custom paths must keep the image as the
+  // host shape's a:blipFill so the shape geometry clips the image correctly.
+  if (!rectangularClip) {
+    return false;
+  }
+
+  // If the image already covers the whole shape, the host shape's a:blipFill is exact and avoids
+  // an unnecessary extra picture. p:pic is only needed for a strict inner image rectangle, where
+  // it preserves the transparent area surrounding a Decal image.
+  bool fillsShape = ipr.visL <= shapeBounds.x + 0.5f && ipr.visT <= shapeBounds.y + 0.5f &&
+                    ipr.visR >= shapeBounds.x + shapeBounds.width - 0.5f &&
+                    ipr.visB >= shapeBounds.y + shapeBounds.height - 0.5f;
+  if (fillsShape) {
     return false;
   }
 
@@ -169,6 +223,83 @@ void PPTWriter::writeGradientStops(XMLBuilder& out, const std::vector<ColorStop*
   out.closeElement();  // a:gsLst
 }
 
+void PPTWriter::writeLinearGradientStops(XMLBuilder& out, const LinearGradient* gradient,
+                                         float alpha, const Rect& shapeBounds) {
+  Point start = gradient->matrix.mapPoint(gradient->startPoint);
+  Point end = gradient->matrix.mapPoint(gradient->endPoint);
+  if (gradient->fitsToGeometry) {
+    start = {shapeBounds.x + start.x * shapeBounds.width,
+             shapeBounds.y + start.y * shapeBounds.height};
+    end = {shapeBounds.x + end.x * shapeBounds.width, shapeBounds.y + end.y * shapeBounds.height};
+  }
+
+  float dx = end.x - start.x;
+  float dy = end.y - start.y;
+  float length2 = dx * dx + dy * dy;
+  if (shapeBounds.isEmpty() || FloatNearlyZero(length2)) {
+    writeGradientStops(out, gradient->colorStops, alpha);
+    return;
+  }
+
+  // DrawingML linear gradients span the projection range of the whole shape. PAGX instead maps
+  // stop 0/1 to the authored start/end points, which may cover only part of the shape. Project the
+  // shape corners onto the authored gradient line and remap the stop positions into DrawingML's
+  // full-shape coordinate range. Stops outside that range are clamped; duplicate boundary stops
+  // preserve the endpoint colours over any area before/after the authored gradient segment.
+  Point corners[] = {{shapeBounds.x, shapeBounds.y},
+                     {shapeBounds.x + shapeBounds.width, shapeBounds.y},
+                     {shapeBounds.x + shapeBounds.width, shapeBounds.y + shapeBounds.height},
+                     {shapeBounds.x, shapeBounds.y + shapeBounds.height}};
+  float minT = std::numeric_limits<float>::max();
+  float maxT = std::numeric_limits<float>::lowest();
+  for (const auto& corner : corners) {
+    float t = ((corner.x - start.x) * dx + (corner.y - start.y) * dy) / length2;
+    minT = std::min(minT, t);
+    maxT = std::max(maxT, t);
+  }
+  float range = maxT - minT;
+  if (FloatNearlyZero(range)) {
+    writeGradientStops(out, gradient->colorStops, alpha);
+    return;
+  }
+
+  std::vector<GradientStopValue> sourceStops;
+  sourceStops.reserve(gradient->colorStops.size());
+  for (const auto* stop : gradient->colorStops) {
+    if (stop != nullptr) {
+      sourceStops.push_back({stop->offset, stop->color});
+    }
+  }
+  if (sourceStops.empty()) {
+    writeGradientStops(out, gradient->colorStops, alpha);
+    return;
+  }
+  std::stable_sort(sourceStops.begin(), sourceStops.end());
+
+  struct MappedStop {
+    float offset;
+    Color color;
+  };
+  std::vector<MappedStop> mapped;
+  mapped.reserve(sourceStops.size() + 2);
+  mapped.push_back({0.0f, SampleGradientColor(sourceStops, minT)});
+  for (const auto& stop : sourceStops) {
+    if (stop.offset > minT && stop.offset < maxT) {
+      mapped.push_back({(stop.offset - minT) / range, stop.color});
+    }
+  }
+  mapped.push_back({1.0f, SampleGradientColor(sourceStops, maxT)});
+
+  out.openElement("a:gsLst").closeElementStart();
+  for (const auto& entry : mapped) {
+    int pos = std::clamp(static_cast<int>(std::round(entry.offset * 100000.0f)), 0, 100000);
+    out.openElement("a:gs").addRequiredAttribute("pos", pos).closeElementStart();
+    WriteSrgbClr(out, entry.color, entry.color.alpha * alpha);
+    out.closeElement();  // a:gs
+  }
+  out.closeElement();  // a:gsLst
+}
+
 void PPTWriter::writeColorSource(XMLBuilder& out, const ColorSource* source, float alpha,
                                  const Rect& shapeBounds) {
   if (!source) {
@@ -199,7 +330,7 @@ void PPTWriter::writeColorSource(XMLBuilder& out, const ColorSource* source, flo
       int ang = AngleToPPT(angleDeg);
 
       out.openElement("a:gradFill").closeElementStart();
-      writeGradientStops(out, grad->colorStops, alpha);
+      writeLinearGradientStops(out, grad, alpha, shapeBounds);
       out.openElement("a:lin")
           .addRequiredAttribute("ang", ang)
           .addRequiredAttribute("scaled", "1")

@@ -52,6 +52,8 @@
 #include "pagx/nodes/InnerShadowStyle.h"
 #include "pagx/nodes/LinearGradient.h"
 #include "pagx/nodes/MergePath.h"
+#include "pagx/nodes/NoiseFilter.h"
+#include "pagx/nodes/NoiseStyle.h"
 #include "pagx/nodes/Path.h"
 #include "pagx/nodes/PathData.h"
 #include "pagx/nodes/Polystar.h"
@@ -79,6 +81,9 @@
 #include "utils/ZipTestUtils.h"
 
 namespace pag {
+
+static std::string WritePPTDocumentXML(pagx::PAGXDocument* doc,
+                                       const pagx::PPTExportOptions& options);
 
 static std::string PPTOutDir() {
   auto dir = ProjectPath::Absolute("test/out/PAGXPPTTest");
@@ -350,6 +355,65 @@ PAGX_TEST(PAGXPPTTest, LinearGradientFill) {
   ASSERT_TRUE(ExportAndVerify(*doc, "linear_gradient"));
 }
 
+PAGX_TEST(PAGXPPTTest, LinearGradientPartialAxisRemapsStops) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 100};
+
+  auto* gradient = doc->makeNode<pagx::LinearGradient>();
+  gradient->startPoint = {0, 0.5f};
+  gradient->endPoint = {0.2f, 0.5f};
+  auto* start = doc->makeNode<pagx::ColorStop>();
+  start->offset = 0;
+  start->color = {1, 0, 0, 1};
+  auto* end = doc->makeNode<pagx::ColorStop>();
+  end->offset = 1;
+  end->color = {0, 0, 1, 1};
+  gradient->colorStops = {start, end};
+  auto* fill = doc->makeNode<pagx::Fill>();
+  fill->color = gradient;
+  layer->contents = {rect, fill};
+  doc->layers.push_back(layer);
+
+  doc->applyLayout();
+  auto body = WritePPTDocumentXML(doc.get(), {});
+  EXPECT_NE(body.find("<a:gs pos=\"0\""), std::string::npos);
+  EXPECT_NE(body.find("<a:gs pos=\"20000\""), std::string::npos);
+  EXPECT_NE(body.find("<a:gs pos=\"100000\""), std::string::npos);
+  ASSERT_TRUE(ExportAndVerify(*doc, "linear_gradient_partial_axis"));
+}
+
+PAGX_TEST(PAGXPPTTest, LinearGradientShiftedAxisInterpolatesBoundaryColors) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 100};
+
+  auto* gradient = doc->makeNode<pagx::LinearGradient>();
+  gradient->startPoint = {-0.5f, 0.5f};
+  gradient->endPoint = {1.5f, 0.5f};
+  auto* start = doc->makeNode<pagx::ColorStop>();
+  start->offset = 0;
+  start->color = {1, 0, 0, 1};
+  auto* end = doc->makeNode<pagx::ColorStop>();
+  end->offset = 1;
+  end->color = {0, 0, 1, 1};
+  gradient->colorStops = {start, end};
+  auto* fill = doc->makeNode<pagx::Fill>();
+  fill->color = gradient;
+  layer->contents = {rect, fill};
+  doc->layers.push_back(layer);
+
+  doc->applyLayout();
+  auto body = WritePPTDocumentXML(doc.get(), {});
+  EXPECT_NE(body.find("<a:gs pos=\"0\"><a:srgbClr val=\"BF0040\""), std::string::npos);
+  EXPECT_NE(body.find("<a:gs pos=\"100000\"><a:srgbClr val=\"4000BF\""), std::string::npos);
+  ASSERT_TRUE(ExportAndVerify(*doc, "linear_gradient_shifted_axis"));
+}
+
 PAGX_TEST(PAGXPPTTest, RadialGradientFill) {
   auto doc = pagx::PAGXDocument::Make(400, 300);
   auto* layer = doc->makeNode<pagx::Layer>();
@@ -376,6 +440,32 @@ PAGX_TEST(PAGXPPTTest, RadialGradientFill) {
   doc->layers.push_back(layer);
 
   ASSERT_TRUE(ExportAndVerify(*doc, "radial_gradient"));
+}
+
+PAGX_TEST(PAGXPPTTest, NonDefaultRadialGradientBakesInFidelityMode) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 100};
+  auto* gradient = doc->makeNode<pagx::RadialGradient>();
+  gradient->radius = 0.25f;
+  auto* start = doc->makeNode<pagx::ColorStop>();
+  start->offset = 0;
+  start->color = {1, 0, 0, 1};
+  auto* end = doc->makeNode<pagx::ColorStop>();
+  end->offset = 1;
+  end->color = {0, 0, 1, 1};
+  gradient->colorStops = {start, end};
+  auto* fill = doc->makeNode<pagx::Fill>();
+  fill->color = gradient;
+  layer->contents = {rect, fill};
+  doc->layers.push_back(layer);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasInexactNativeMapping);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_FALSE(features.needsRasterization(false));
 }
 
 PAGX_TEST(PAGXPPTTest, GradientStopWithAlpha) {
@@ -3225,6 +3315,11 @@ PAGX_TEST(PAGXPPTTest, ImagePatternOnEllipse) {
   layer->contents.push_back(fill);
   doc->layers.push_back(layer);
 
+  doc->applyLayout();
+  auto body = WritePPTDocumentXML(doc.get(), {});
+  EXPECT_EQ(body.find("<p:pic>"), std::string::npos);
+  EXPECT_NE(body.find("prst=\"ellipse\""), std::string::npos);
+  EXPECT_NE(body.find("<a:blipFill>"), std::string::npos);
   ASSERT_TRUE(ExportAndVerify(*doc, "imagepattern_ellipse"));
 }
 
@@ -3252,7 +3347,108 @@ PAGX_TEST(PAGXPPTTest, ImagePatternOnPath) {
   layer->contents.push_back(fill);
   doc->layers.push_back(layer);
 
+  doc->applyLayout();
+  auto body = WritePPTDocumentXML(doc.get(), {});
+  EXPECT_EQ(body.find("<p:pic>"), std::string::npos);
+  EXPECT_NE(body.find("<a:custGeom>"), std::string::npos);
+  EXPECT_NE(body.find("<a:blipFill>"), std::string::npos);
   ASSERT_TRUE(ExportAndVerify(*doc, "imagepattern_path"));
+}
+
+PAGX_TEST(PAGXPPTTest, RoundedRectangleImagePatternKeepsHostGeometry) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 150};
+  rect->roundness = 28;
+
+  auto* pattern = doc->makeNode<pagx::ImagePattern>();
+  pattern->image = MakeTestPNGImage(doc.get());
+  pattern->scaleMode = pagx::ScaleMode::Zoom;
+  auto* fill = doc->makeNode<pagx::Fill>();
+  fill->color = pattern;
+  layer->contents.push_back(rect);
+  layer->contents.push_back(fill);
+  doc->layers.push_back(layer);
+
+  doc->applyLayout();
+  auto body = WritePPTDocumentXML(doc.get(), {});
+  EXPECT_EQ(body.find("<p:pic>"), std::string::npos);
+  EXPECT_NE(body.find("prst=\"roundRect\""), std::string::npos);
+  EXPECT_NE(body.find("<a:blipFill>"), std::string::npos);
+  ASSERT_TRUE(ExportAndVerify(*doc, "rounded_rect_imagepattern"));
+}
+
+PAGX_TEST(PAGXPPTTest, OutsideStrokeOnSharpRectangleStaysSharp) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {160, 120};
+  rect->roundness = 0;
+
+  auto* stroke = doc->makeNode<pagx::Stroke>();
+  stroke->width = 8;
+  stroke->align = pagx::StrokeAlign::Outside;
+  stroke->color = doc->makeNode<pagx::SolidColor>();
+  layer->contents.push_back(rect);
+  layer->contents.push_back(stroke);
+  doc->layers.push_back(layer);
+
+  doc->applyLayout();
+  pagx::PPTExportOptions options;
+  options.bakeUnsupported = false;
+  auto body = WritePPTDocumentXML(doc.get(), options);
+  EXPECT_NE(body.find("prst=\"rect\""), std::string::npos);
+  EXPECT_EQ(body.find("prst=\"roundRect\""), std::string::npos);
+}
+
+PAGX_TEST(PAGXPPTTest, NonCenteredStrokeBakesInFidelityMode) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {160, 120};
+  auto* stroke = doc->makeNode<pagx::Stroke>();
+  stroke->width = 8;
+  stroke->align = pagx::StrokeAlign::Outside;
+  stroke->color = doc->makeNode<pagx::SolidColor>();
+  layer->contents = {rect, stroke};
+  doc->layers.push_back(layer);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasInexactNativeMapping);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_FALSE(features.needsRasterization(false));
+
+  auto data = pagx::PPTExporter::ToData({doc.get()});
+  ASSERT_NE(data, nullptr);
+  std::unordered_map<std::string, std::string> entries;
+  std::string error;
+  ASSERT_TRUE(ExtractZipEntries(data.get(), &entries, &error)) << error;
+  EXPECT_NE(entries.at("ppt/slides/slide1.xml").find("<p:pic>"), std::string::npos);
+}
+
+PAGX_TEST(PAGXPPTTest, RotatedImagePatternEscalated) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {160, 120};
+  auto* pattern = doc->makeNode<pagx::ImagePattern>();
+  pattern->image = MakeTestPNGImage(doc.get());
+  float angle = 0.25f;
+  pattern->matrix = {std::cos(angle), std::sin(angle), -std::sin(angle), std::cos(angle), 0, 0};
+  auto* fill = doc->makeNode<pagx::Fill>();
+  fill->color = pattern;
+  layer->contents = {rect, fill};
+  doc->layers.push_back(layer);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasUnsupportedImagePattern);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_TRUE(features.needsRasterization(false));
 }
 
 PAGX_TEST(PAGXPPTTest, MaskNoBakeContourType) {
@@ -4495,6 +4691,90 @@ PAGX_TEST(PAGXPPTTest, ColorMatrixFilterEscalated) {
 
   doc->layers.push_back(layer);
   ASSERT_TRUE(ExportAndVerify(*doc, "colormatrix_raster"));
+}
+
+PAGX_TEST(PAGXPPTTest, NoiseFilterEscalated) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 150};
+  layer->contents.push_back(rect);
+  layer->contents.push_back(MakeSolidFill(doc.get(), {0.5f, 0.5f, 0.5f, 1.0f}));
+
+  auto* noise = doc->makeNode<pagx::NoiseFilter>();
+  noise->size = 4;
+  noise->density = 0.5f;
+  layer->filters.push_back(noise);
+  doc->layers.push_back(layer);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasProceduralNoise);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_TRUE(features.needsRasterization(false));
+  EXPECT_FALSE(features.requiresBackdrop(true));
+
+  auto data = pagx::PPTExporter::ToData({doc.get()});
+  ASSERT_NE(data, nullptr);
+  std::unordered_map<std::string, std::string> entries;
+  std::string error;
+  ASSERT_TRUE(ExtractZipEntries(data.get(), &entries, &error)) << error;
+  EXPECT_NE(entries.at("ppt/slides/slide1.xml").find("<p:pic>"), std::string::npos);
+}
+
+PAGX_TEST(PAGXPPTTest, NoiseStyleEscalated) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 150};
+  layer->contents.push_back(rect);
+  layer->contents.push_back(MakeSolidFill(doc.get(), {0.5f, 0.5f, 0.5f, 1.0f}));
+
+  auto* noise = doc->makeNode<pagx::NoiseStyle>();
+  noise->size = 4;
+  noise->density = 0.5f;
+  layer->styles.push_back(noise);
+  doc->layers.push_back(layer);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasProceduralNoise);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_TRUE(features.needsRasterization(false));
+  EXPECT_FALSE(features.requiresBackdrop(true));
+
+  auto data = pagx::PPTExporter::ToData({doc.get()});
+  ASSERT_NE(data, nullptr);
+  std::unordered_map<std::string, std::string> entries;
+  std::string error;
+  ASSERT_TRUE(ExtractZipEntries(data.get(), &entries, &error)) << error;
+  EXPECT_NE(entries.at("ppt/slides/slide1.xml").find("<p:pic>"), std::string::npos);
+}
+
+PAGX_TEST(PAGXPPTTest, InexactNativeEffectsBakeInFidelityMode) {
+  auto doc = pagx::PAGXDocument::Make(400, 300);
+  auto* layer = doc->makeNode<pagx::Layer>();
+  auto* rect = doc->makeNode<pagx::Rectangle>();
+  rect->position = {200, 150};
+  rect->size = {200, 150};
+  layer->contents.push_back(rect);
+  layer->contents.push_back(MakeSolidFill(doc.get(), {0.5f, 0.5f, 0.5f, 1.0f}));
+
+  auto* blur = doc->makeNode<pagx::BlurFilter>();
+  blur->blurX = 4;
+  blur->blurY = 9;
+  layer->filters.push_back(blur);
+
+  auto features = pagx::ProbeLayerFeatures(layer);
+  EXPECT_TRUE(features.hasInexactNativeMapping);
+  EXPECT_TRUE(features.needsRasterization(true));
+  EXPECT_FALSE(features.needsRasterization(false));
+  EXPECT_FALSE(features.requiresBackdrop(true));
+
+  // Export normally succeeds by baking the layer. On hosts where an off-screen GPU context cannot
+  // be created, fidelity mode is intentionally fail-closed instead of returning an incorrect
+  // native approximation; the feature-routing assertions above remain deterministic either way.
+  pagx::PPTExporter::ToData({doc.get()});
 }
 
 PAGX_TEST(PAGXPPTTest, LayerNonNormalBlendModeEscalated) {
