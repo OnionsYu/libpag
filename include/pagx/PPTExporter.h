@@ -83,12 +83,10 @@ struct PPTExportOptions {
    * clamped to sRGB), preserving full editability at the cost of visual fidelity. Tiled image
    * patterns are always baked regardless of this flag because the native OOXML a:tile mechanism
    * produces inconsistent scaling across PowerPoint and Keynote. Features with no meaningful
-   * vector fallback (TextPath, TextModifier, ColorMatrix, conic/diamond gradients, unsupported
-   * image transforms, shear transforms and procedural noise) are always baked regardless of this
-   * flag. The default value is true, favouring visual fidelity over editability — callers that need
-   * editable vector output for unsupported features should set this to false explicitly.
-   * When a required raster fallback cannot be rendered or PNG-encoded, the export fails instead
-   * of silently emitting an incorrect native approximation.
+   * vector fallback (TextPath, TextModifier, ColorMatrix, conic/diamond gradients, shear
+   * transforms) are always baked regardless of this flag. The default value is true, favouring
+   * visual fidelity over editability — callers that need editable vector output for unsupported
+   * features should set this to false explicitly.
    */
   bool bakeUnsupported = true;
 

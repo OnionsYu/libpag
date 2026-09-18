@@ -42,7 +42,6 @@
 #include "pagx/nodes/InnerShadowFilter.h"
 #include "pagx/nodes/InnerShadowStyle.h"
 #include "pagx/nodes/LayerStyle.h"
-#include "pagx/nodes/LinearGradient.h"
 #include "pagx/nodes/Path.h"
 #include "pagx/nodes/Rectangle.h"
 #include "pagx/nodes/Stroke.h"
@@ -685,10 +684,6 @@ class PPTWriter {
   // tgfxLayer->children() resolves the correct per-instance subtree for any Composition reference.
   void writeDocument(XMLBuilder& out);
 
-  bool failed() const {
-    return _failed;
-  }
-
   void writeLayer(XMLBuilder& out, const Layer* layer,
                   const std::shared_ptr<tgfx::Layer>& tgfxLayer, const Matrix& parentMatrix = {},
                   float parentAlpha = 1.0f);
@@ -723,7 +718,6 @@ class PPTWriter {
   GPUContext _gpu;
   LayerBuildResult _buildResult = {};
   bool _buildResultReady = false;
-  bool _failed = false;
   ModifierResolver _resolver;
   // Fixed-line-height modifier TextBoxes can split one laid-out block across sibling Text nodes.
   // Cache the first line's embedded baseline offset from its authored line-box top so every
@@ -896,8 +890,6 @@ class PPTWriter {
   void writeImagePatternFill(XMLBuilder& out, const ImagePattern* pattern, float alpha,
                              const Rect& shapeBounds);
   void writeGradientStops(XMLBuilder& out, const std::vector<ColorStop*>& stops, float alpha);
-  void writeLinearGradientStops(XMLBuilder& out, const LinearGradient* gradient, float alpha,
-                                const Rect& shapeBounds);
   void writeStroke(XMLBuilder& out, const Stroke* stroke, float alpha);
   void writeEffects(XMLBuilder& out, const std::vector<LayerFilter*>& filters,
                     const std::vector<LayerStyle*>& styles = {});
@@ -959,7 +951,7 @@ class PPTWriter {
   // Write non-tiling ImagePattern fill as a separate p:pic element.
   // Returns true if the image was written; caller should use a:noFill for the shape.
   bool writeImagePatternAsPicture(XMLBuilder& out, const Fill* fill, const Rect& shapeBounds,
-                                  const Matrix& m, float alpha, bool rectangularClip);
+                                  const Matrix& m, float alpha);
 };
 
 }  // namespace pagx

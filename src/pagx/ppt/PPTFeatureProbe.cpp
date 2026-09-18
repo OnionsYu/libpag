@@ -21,23 +21,15 @@
 #include "base/utils/MathUtil.h"
 #include "pagx/nodes/BackgroundBlurStyle.h"
 #include "pagx/nodes/BlendFilter.h"
-#include "pagx/nodes/BlurFilter.h"
 #include "pagx/nodes/ColorMatrixFilter.h"
 #include "pagx/nodes/ColorSource.h"
 #include "pagx/nodes/ColorStop.h"
 #include "pagx/nodes/ConicGradient.h"
 #include "pagx/nodes/DiamondGradient.h"
-#include "pagx/nodes/DropShadowFilter.h"
-#include "pagx/nodes/DropShadowStyle.h"
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Group.h"
-#include "pagx/nodes/ImagePattern.h"
-#include "pagx/nodes/InnerShadowFilter.h"
-#include "pagx/nodes/InnerShadowStyle.h"
 #include "pagx/nodes/LayerFilter.h"
 #include "pagx/nodes/LinearGradient.h"
-#include "pagx/nodes/NoiseFilter.h"
-#include "pagx/nodes/NoiseStyle.h"
 #include "pagx/nodes/RadialGradient.h"
 #include "pagx/nodes/SolidColor.h"
 #include "pagx/nodes/Stroke.h"
@@ -45,8 +37,6 @@
 #include "pagx/types/BlendMode.h"
 #include "pagx/types/Color.h"
 #include "pagx/types/Matrix.h"
-#include "pagx/types/StrokeStyle.h"
-#include "pagx/types/TileMode.h"
 
 namespace pagx {
 
@@ -104,9 +94,6 @@ static void Merge(PPTFeatureFlags* dst, const PPTFeatureFlags& src) {
   dst->hasConicGradient |= src.hasConicGradient;
   dst->hasShearTransform |= src.hasShearTransform;
   dst->hasBackdropStyle |= src.hasBackdropStyle;
-  dst->hasProceduralNoise |= src.hasProceduralNoise;
-  dst->hasUnsupportedImagePattern |= src.hasUnsupportedImagePattern;
-  dst->hasInexactNativeMapping |= src.hasInexactNativeMapping;
 }
 
 static bool GradientHasWideGamutStop(const std::vector<ColorStop*>& stops) {
@@ -137,19 +124,6 @@ static void ProbeColorSource(const ColorSource* source, PPTFeatureFlags* out) {
       if (GradientHasWideGamutStop(static_cast<const RadialGradient*>(source)->colorStops)) {
         out->hasWideGamutColor = true;
       }
-      {
-        auto* gradient = static_cast<const RadialGradient*>(source);
-        bool hasLinearTransform =
-            !FloatNearlyZero(gradient->matrix.a - 1.0f) || !FloatNearlyZero(gradient->matrix.b) ||
-            !FloatNearlyZero(gradient->matrix.c) || !FloatNearlyZero(gradient->matrix.d - 1.0f);
-        // DrawingML path gradients can preserve the focus point, but they do not expose PAGX's
-        // independent radius or an arbitrary transformed radial coordinate system. The default
-        // normalized radius is the one exact common case; everything else is a fidelity bake.
-        if (!gradient->fitsToGeometry || !FloatNearlyZero(gradient->radius - 0.5f) ||
-            hasLinearTransform) {
-          out->hasInexactNativeMapping = true;
-        }
-      }
       break;
     case NodeType::ConicGradient:
       out->hasConicGradient = true;
@@ -163,17 +137,6 @@ static void ProbeColorSource(const ColorSource* source, PPTFeatureFlags* out) {
         out->hasWideGamutColor = true;
       }
       break;
-    case NodeType::ImagePattern: {
-      auto* pattern = static_cast<const ImagePattern*>(source);
-      bool nonTiling =
-          pattern->tileModeX == TileMode::Decal && pattern->tileModeY == TileMode::Decal;
-      if (nonTiling &&
-          (!FloatNearlyZero(pattern->matrix.b) || !FloatNearlyZero(pattern->matrix.c) ||
-           pattern->matrix.a <= 0 || pattern->matrix.d <= 0)) {
-        out->hasUnsupportedImagePattern = true;
-      }
-      break;
-    }
     default:
       break;
   }
@@ -205,15 +168,6 @@ PPTFeatureFlags ProbeElementsFeatures(const std::vector<Element*>& elements) {
         auto* stroke = static_cast<const Stroke*>(el);
         if (!IsSupportedPaintBlendMode(stroke->blendMode)) {
           out.hasUnsupportedBlend = true;
-        }
-        if (stroke->align != StrokeAlign::Center || !FloatNearlyZero(stroke->dashOffset) ||
-            stroke->dashAdaptive) {
-          out.hasInexactNativeMapping = true;
-        }
-        if (stroke->color != nullptr && stroke->color->nodeType() == NodeType::ImagePattern) {
-          // DrawingML line fills do not provide the same image-pattern placement and clipping
-          // model as PAGX strokes. Bake instead of emitting a misleading rectangular blip fill.
-          out.hasInexactNativeMapping = true;
         }
         ProbeColorSource(stroke->color, &out);
         break;
@@ -249,10 +203,6 @@ PPTFeatureFlags ProbeLayerFeatures(const Layer* layer) {
   if (!layer->matrix.isIdentity() && MatrixHasShear(layer->matrix)) {
     out.hasShearTransform = true;
   }
-  int blurCount = 0;
-  int blendCount = 0;
-  int innerShadowCount = 0;
-  int dropShadowCount = 0;
   for (const auto* filter : layer->filters) {
     if (filter == nullptr) {
       continue;
@@ -260,40 +210,10 @@ PPTFeatureFlags ProbeLayerFeatures(const Layer* layer) {
     auto type = filter->nodeType();
     if (type == NodeType::ColorMatrixFilter) {
       out.hasColorMatrix = true;
-    } else if (type == NodeType::NoiseFilter) {
-      out.hasProceduralNoise = true;
-    } else if (type == NodeType::BlurFilter) {
-      auto* blur = static_cast<const BlurFilter*>(filter);
-      blurCount++;
-      if (!FloatNearlyZero(blur->blurX - blur->blurY) || blur->tileMode != TileMode::Decal) {
-        out.hasInexactNativeMapping = true;
-      }
     } else if (type == NodeType::BlendFilter) {
       auto* blend = static_cast<const BlendFilter*>(filter);
-      blendCount++;
       if (!IsSupportedBlendFilterMode(blend->blendMode)) {
         out.hasUnsupportedBlend = true;
-      }
-      if (ColorIsWideGamut(blend->color)) {
-        out.hasWideGamutColor = true;
-      }
-    } else if (type == NodeType::InnerShadowFilter) {
-      auto* shadow = static_cast<const InnerShadowFilter*>(filter);
-      innerShadowCount++;
-      if (!FloatNearlyZero(shadow->blurX - shadow->blurY) || shadow->shadowOnly) {
-        out.hasInexactNativeMapping = true;
-      }
-      if (ColorIsWideGamut(shadow->color)) {
-        out.hasWideGamutColor = true;
-      }
-    } else if (type == NodeType::DropShadowFilter) {
-      auto* shadow = static_cast<const DropShadowFilter*>(filter);
-      dropShadowCount++;
-      if (!FloatNearlyZero(shadow->blurX - shadow->blurY) || shadow->shadowOnly) {
-        out.hasInexactNativeMapping = true;
-      }
-      if (ColorIsWideGamut(shadow->color)) {
-        out.hasWideGamutColor = true;
       }
     }
   }
@@ -312,36 +232,7 @@ PPTFeatureFlags ProbeLayerFeatures(const Layer* layer) {
       // layer's shape (frost / refraction / chromatic dispersion / edge lighting) as soon as
       // it is present, so flag it unconditionally.
       out.hasBackdropStyle = true;
-    } else if (style->nodeType() == NodeType::NoiseStyle) {
-      out.hasProceduralNoise = true;
-    } else if (style->nodeType() == NodeType::InnerShadowStyle) {
-      auto* shadow = static_cast<const InnerShadowStyle*>(style);
-      innerShadowCount++;
-      if (!FloatNearlyZero(shadow->blurX - shadow->blurY) ||
-          shadow->blendMode != BlendMode::Normal || shadow->excludeChildEffects) {
-        out.hasInexactNativeMapping = true;
-      }
-      if (ColorIsWideGamut(shadow->color)) {
-        out.hasWideGamutColor = true;
-      }
-    } else if (style->nodeType() == NodeType::DropShadowStyle) {
-      auto* shadow = static_cast<const DropShadowStyle*>(style);
-      dropShadowCount++;
-      if (!FloatNearlyZero(shadow->blurX - shadow->blurY) ||
-          shadow->blendMode != BlendMode::Normal || shadow->excludeChildEffects ||
-          !shadow->showBehindLayer) {
-        out.hasInexactNativeMapping = true;
-      }
-      if (ColorIsWideGamut(shadow->color)) {
-        out.hasWideGamutColor = true;
-      }
     }
-  }
-  // DrawingML effectLst permits only one blur, one inner shadow, and one outer shadow. The
-  // native writer intentionally selects the first of each kind, so multiple authored instances
-  // must bake in fidelity mode instead of silently losing the remaining effects.
-  if (blurCount > 1 || blendCount > 1 || innerShadowCount > 1 || dropShadowCount > 1) {
-    out.hasInexactNativeMapping = true;
   }
 
   // Only probe the layer's own contents (groups / text boxes are emitted as

@@ -58,34 +58,21 @@ struct PPTFeatureFlags {
                                      // has no primitive that can reproduce either; on the vector
                                      // path the style is silently dropped, and only the
                                      // backdrop-aware raster fallback can reproduce it.
-  bool hasProceduralNoise = false;   // NoiseFilter / NoiseStyle. DrawingML has no portable
-                                     // procedural-noise primitive, so a native vector fallback
-                                     // would silently discard the effect.
-  bool hasUnsupportedImagePattern = false;  // A non-tiling image transform with rotation, shear,
-                                            // or reflection cannot be represented faithfully by
-                                            // DrawingML's axis-aligned srcRect/fillRect model.
-  bool hasInexactNativeMapping = false;     // A nominally supported feature uses semantics that
-                                            // cannot be represented exactly by one DrawingML object
-                                            // (for example anisotropic blur, multiple shadows,
-                                            // shadowOnly, or non-centred strokes).
 
   /**
    * Returns true when at least one unsupported feature is present and the exporter should fall
    * back to baking the layer to a PNG patch. Features with no meaningful vector fallback
-   * (TextPath, TextModifier, ColorMatrix, conic/diamond gradients, unsupported image transforms,
-   * shear transforms, and procedural noise) always trigger a bake. Features that have a
-   * degraded-but-valid vector fallback (unsupported blend modes fall back to Normal, wide-gamut
-   * colors clamp to sRGB, backdrop styles are dropped, and inexact native mappings are
-   * approximated) trigger a bake only when the caller opts in via `bakeUnsupported`.
+   * (TextPath, TextModifier, ColorMatrix, conic/diamond gradients, shear transforms) always
+   * trigger a bake. Features that have a degraded-but-valid vector fallback (unsupported blend
+   * modes fall back to Normal, wide-gamut colors clamp to sRGB, backdrop styles are dropped)
+   * trigger a bake only when the caller opts in via `bakeUnsupported`.
    */
   bool needsRasterization(bool bakeUnsupported) const {
     if (hasTextPath || hasTextModifier || hasColorMatrix || hasConicGradient ||
-        hasDiamondGradient || hasShearTransform || hasProceduralNoise ||
-        hasUnsupportedImagePattern) {
+        hasDiamondGradient || hasShearTransform) {
       return true;
     }
-    if (bakeUnsupported &&
-        (hasUnsupportedBlend || hasWideGamutColor || hasBackdropStyle || hasInexactNativeMapping)) {
+    if (bakeUnsupported && (hasUnsupportedBlend || hasWideGamutColor || hasBackdropStyle)) {
       return true;
     }
     return false;

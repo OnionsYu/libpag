@@ -283,8 +283,7 @@ void PPTWriter::writeRectangle(XMLBuilder& out, const Rectangle* rect, const Fil
 
   Rect shapeBounds = Rect::MakeXYWH(x, y, w, h);
 
-  bool imageWritten =
-      writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha, roundness <= 0.0f);
+  bool imageWritten = writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha);
   if (CanSkipShapeAfterPicture(imageWritten, fs, filters, styles)) {
     return;
   }
@@ -331,7 +330,7 @@ void PPTWriter::writeEllipse(XMLBuilder& out, const Ellipse* ellipse, const Fill
 
   Rect shapeBounds = Rect::MakeXYWH(x, y, w, h);
 
-  bool imageWritten = writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha, false);
+  bool imageWritten = writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha);
   if (CanSkipShapeAfterPicture(imageWritten, fs, filters, styles)) {
     return;
   }
@@ -376,7 +375,7 @@ void PPTWriter::writePath(XMLBuilder& out, const Path* path, const FillStrokeInf
   float adjustedY = scaledBoundsY - (adjustedH - scaledBoundsH) / 2.0f;
   Rect shapeBounds = Rect::MakeXYWH(adjustedX, adjustedY, adjustedW, adjustedH);
 
-  bool imageWritten = writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha, false);
+  bool imageWritten = writeImagePatternAsPicture(out, fs.fill, shapeBounds, m, alpha);
   if (CanSkipShapeAfterPicture(imageWritten, fs, filters, styles)) {
     return;
   }
@@ -737,10 +736,11 @@ void PPTWriter::writeLayer(XMLBuilder& out, const Layer* layer,
     if (rasterizeLayerAsPicture(out, layer, tgfxLayer)) {
       return;
     }
-    // Fidelity mode must never turn a failed bake into a successful but visibly wrong export.
-    // Empty-bounds layers are already reported as successful no-ops by rasterizeLayerAsPicture.
-    _failed = true;
-    return;
+    // Bake failed environmentally (no GPU, encoder error, etc.) - fall through
+    // to writing the layer as a regular layer so its content is at least
+    // visible without the mask effect. Empty-bounds (fully-masked-out) layers
+    // are handled inside rasterizeLayerAsPicture as a successful no-op and
+    // never reach this fallback.
   }
 
   // OOXML has no native clipping primitive for arbitrary shape children, so a
@@ -754,8 +754,11 @@ void PPTWriter::writeLayer(XMLBuilder& out, const Layer* layer,
     if (rasterizeLayerAsPicture(out, layer, tgfxLayer)) {
       return;
     }
-    _failed = true;
-    return;
+    // Bake failed environmentally (no GPU, encoder error, etc.) - fall through
+    // and emit the layer's content unclipped so it remains at least partially
+    // visible. Empty-bounds layers (everything clipped out by scrollRect) are
+    // handled inside rasterizeLayerAsPicture as a successful no-op so they
+    // don't leak through this fallback.
   }
 
   // Probe the layer for features that OOXML cannot represent natively. Features
@@ -780,15 +783,13 @@ void PPTWriter::writeLayer(XMLBuilder& out, const Layer* layer,
     if (rasterizeLayerAsPicture(out, layer, tgfxLayer, withBackdrop)) {
       return;
     }
-    _failed = true;
-    return;
   }
 
   // scrollRect's translation half (-rectX, -rectY) shifts children so the
   // rect's top-left maps to the layer origin (matches tgfx setScrollRect).
   // OOXML can't express the clip half natively, but the translation is a
   // plain affine and we can apply it here so children land at the correct
-  // position when rasterization is explicitly disabled. Without this the
+  // position even when rasterization is disabled or fails. Without this the
   // children would render at their pre-scroll authored positions, visibly
   // offset from the rect's intended viewport.
   if (layer->hasScrollRect) {
@@ -911,9 +912,6 @@ void PPTWriter::writeDocument(XMLBuilder& out) {
     }
     ++topIndex;
     writeLayer(out, layer, tgfxLayer);
-    if (_failed) {
-      return;
-    }
   }
 }
 
@@ -960,9 +958,6 @@ std::string BuildSlideXml(PAGXDocument& doc, const PPTExportOptions& options,
 
   XMLBuilder body(false, 2, 0, 16384);
   writer.writeDocument(body);
-  if (writer.failed()) {
-    return {};
-  }
   std::string bodyContent = body.release();
 
   std::string slide;
@@ -1028,9 +1023,6 @@ std::vector<SlideBuild> BuildSlides(const std::vector<PAGXDocument*>& documents,
     // iteration instead of holding one per slide alive for the whole deck.
     auto layoutContext = std::make_unique<LayoutContext>(options.fontConfig);
     slide.xml = BuildSlideXml(*doc, options, *slide.context, layoutContext.get());
-    if (slide.xml.empty()) {
-      return {};
-    }
     imageBase += static_cast<int>(slide.context->images().size());
     slides.push_back(std::move(slide));
   }
