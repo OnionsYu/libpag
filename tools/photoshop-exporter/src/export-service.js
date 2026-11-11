@@ -1,5 +1,6 @@
 /* Copyright (C) 2026 Tencent. Licensed under the Apache License, Version 2.0. */
 "use strict";
+const { makeExportReport } = require("./export-report.js");
 
 class ExportCancelled extends Error {
   constructor() { super("已取消导出"); this.name = "ExportCancelled"; }
@@ -26,6 +27,7 @@ class ExportService {
       checkCancelled(signal);
       let name;
       let plan;
+      let report;
       await this.host.withDocument(input, signal, async (document, context) => {
         checkCancelled(signal, context);
         progress("读取 Photoshop 文档…");
@@ -34,6 +36,7 @@ class ExportService {
         checkCancelled(signal, context);
         plan = this.bridge.begin(source, forceComposite);
         sessionId = plan.sessionId;
+        report = makeExportReport(source, plan, forceComposite, this.bridge.info);
         await this.host.prepareCaptures(document, source, plan);
         for (let index = 0; index < plan.rasters.length; index++) {
           checkCancelled(signal, context);
@@ -53,9 +56,9 @@ class ExportService {
       sessionId = undefined;
       checkCancelled(signal);
       progress("写入 PAGX…");
-      const file = await this.files.publish(folder, name, xml, signal);
+      const file = await this.files.publish(folder, name, xml, signal, report);
       return { file, composite: plan.composite, diagnostics: plan.diagnostics, statistics: plan.statistics,
-        captures: plan.rasters };
+        captures: plan.rasters, report };
     } finally {
       try {
         if (sessionId !== undefined) this.bridge.discard(sessionId);

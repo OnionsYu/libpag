@@ -6,6 +6,7 @@ const { NativeBridge } = require("./src/native-bridge.js");
 const { PhotoshopHost } = require("./src/photoshop-host.js");
 const { OutputFiles } = require("./src/output-files.js");
 const { ExportService, ExportCancelled } = require("./src/export-service.js");
+const { summarizeReport } = require("./src/export-report.js");
 const status = document.getElementById("status");
 const details = document.getElementById("details");
 const current = document.getElementById("current");
@@ -41,7 +42,7 @@ async function run(kind) {
       forceComposite: document.getElementById("mode").value === "composite",
       progress: message => { status.textContent = message; } });
     status.textContent = `已导出：${result.file.name}`;
-    details.textContent = result.file.nativePath;
+    details.textContent = `${summarizeReport(result.report)}\n\n${result.file.nativePath}\n报告：${result.file.reportPath}`;
   } catch (error) {
     status.textContent = error instanceof ExportCancelled || activeSignal.cancelled || (error && error.number === 8007)
       ? "已取消导出" : `导出失败：${error && error.message || String(error)}`;

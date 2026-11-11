@@ -15,12 +15,15 @@ function serviceFixture() {
       try { return await task({}, { reportProgress() {} }); }
       finally { calls.push("close"); }
     },
-    async snapshot() { return { name: "sample.psd" }; },
+    async snapshot() { return { name: "sample.psd", schemaVersion: 2, layers: [] }; },
     async prepareCaptures() {},
     async capture(doc, source, request, consume) { consume({}, new Uint8Array([1, 2, 3, 255])); }
   };
   const bridge = {
-    begin() { return { sessionId: "s", composite: true, rasters: [{ id: "composite" }], diagnostics: [] }; },
+    info: { version: "0.2.0", protocolVersion: 2 },
+    begin() { return { sessionId: "s", composite: true,
+      statistics: { vectorShapes: 0, outlinedTexts: 0, sourceImages: 0, fallbackScopes: 1 },
+      rasters: [{ id: "composite", layerIds: [], parentId: "" }], diagnostics: [] }; },
     addRaster() { calls.push("pixels"); },
     finish() { calls.push("finish"); return "<pagx/>"; },
     discard() { calls.push("discard"); }
@@ -68,7 +71,7 @@ test("simultaneous exports are rejected", async () => {
   f.host.snapshot = () => new Promise(resolve => { resume = resolve; });
   const first = f.service.run({ input: { kind: "current" } });
   await assert.rejects(f.service.run({ input: { kind: "file" } }), /已有导出/);
-  resume({ name: "sample" });
+  resume({ name: "sample", schemaVersion: 2, layers: [] });
   await first;
 });
 

@@ -3,4 +3,4 @@ h3 { margin: 0 0 12px; font-size: 20px; }
 p { margin: 10px 0; line-height: 1.5; }
 button { display: block; width: 100%; margin: 8px 0; }
 .note { opacity: 0.72; font-size: 12px; }
-#status { white-space: pre-wrap; }
+#status, #details { white-space: pre-wrap; }
