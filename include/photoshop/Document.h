@@ -1,0 +1,101 @@
+/////////////////////////////////////////////////////////////////////////////////////////////////
+// Copyright (C) 2026 Tencent. All rights reserved.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace photoshop {
+
+// This source model deliberately has no Photoshop SDK or PAGX dependencies. Coordinates are
+// document pixels, children are in bottom-to-top paint order, and opacity values are in [0, 1].
+struct Rect {
+  float left = 0;
+  float top = 0;
+  float width = 0;
+  float height = 0;
+};
+
+enum class LayerKind {
+  Unknown,
+  Pixel,
+  Group,
+  Text,
+  Shape,
+  Fill,
+  SmartObject,
+  Adjustment,
+  Artboard
+};
+
+struct SolidRectangle {
+  Rect bounds = {};
+  float red = 0;
+  float green = 0;
+  float blue = 0;
+  float alpha = 1;
+  float roundness = 0;
+};
+
+struct Layer {
+  std::string id = {};
+  int64_t sourceLayerId = -1;
+  std::string name = {};
+  LayerKind kind = LayerKind::Unknown;
+  bool visible = true;
+  float opacity = 1;
+  float fillOpacity = 1;
+  std::string blendMode = "unknown";
+  // False means the adapter could not establish compositing semantics. Never infer "normal".
+  bool compositingKnown = false;
+  std::string clippingBase = {};
+  // Nonempty means the current native mapping cannot prove backdrop independence.
+  std::vector<std::string> features = {};
+  Rect bounds = {};
+  std::string text = {};
+  std::optional<SolidRectangle> rectangle = {};
+  std::vector<Layer> children = {};
+};
+
+struct Document {
+  int schemaVersion = 1;
+  std::string name = {};
+  std::string hostVersion = {};
+  float resolution = 72;
+  std::string colorMode = "RGB";
+  std::string colorProfile = "sRGB IEC61966-2.1";
+  int bitDepth = 8;
+  // Explicit export rectangle. The importer translates its origin to PAGX (0, 0).
+  Rect bounds = {};
+  std::vector<std::string> features = {};
+  std::vector<Layer> layers = {};
+};
+
+struct Diagnostic {
+  std::string code;
+  std::string layerId;
+  std::string message;
+};
+
+// Layer captures are document-composite renders with only that leaf and its ancestors visible.
+// Ancestor opacity is neutralized; the leaf's own appearance, opacity and fill are baked. Images
+// must be full-resolution, unassociated-alpha, sRGB PNGs. Transparent captures have empty bytes
+// and zero size. Source metadata remains separate from these derived rendering resources.
+struct RasterAsset {
+  std::string requestId;
+  Rect bounds = {};
+  std::vector<uint8_t> png = {};
+};
+
+// Throws std::invalid_argument for unsupported versions, malformed trees, dangling references,
+// non-finite numbers, invalid ranges, or excessive depth/node count. Does not silently repair data.
+void Validate(const Document& document);
+
+}  // namespace photoshop
