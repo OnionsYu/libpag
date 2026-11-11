@@ -9,6 +9,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
+#include "PhotoshopCompositingPlanner.h"
 #include "PhotoshopShapeBuilder.h"
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Image.h"
@@ -20,50 +21,6 @@
 
 namespace pagx {
 namespace {
-bool IsGroup(const photoshop::Layer& layer) {
-  return layer.kind == photoshop::LayerKind::Group;
-}
-bool IsNative(const photoshop::Layer& layer) {
-  return layer.rasterFeatures.empty() &&
-         (layer.rectangle || (layer.shape && CanBuildShape(*layer.shape)));
-}
-bool IsEmpty(const photoshop::Layer& layer) {
-  return layer.kind == photoshop::LayerKind::Pixel && layer.bounds.width == 0 &&
-         layer.bounds.height == 0 && layer.rasterFeatures.empty();
-}
-void AnalyzeLayers(const std::vector<photoshop::Layer>& layers, PhotoshopConversionPlan& plan) {
-  for (const auto& layer : layers) {
-    if (!layer.visible) continue;
-    bool safeBlend = layer.blendMode == "normal" ||
-                     (IsGroup(layer) && layer.blendMode == "passThrough" && layer.opacity == 1);
-    bool safeKind = layer.kind != photoshop::LayerKind::Unknown &&
-                    layer.kind != photoshop::LayerKind::Adjustment &&
-                    layer.kind != photoshop::LayerKind::Artboard;
-    if (!layer.compositingKnown || !safeBlend || !safeKind || !layer.clippingBase.empty() ||
-        !layer.features.empty() ||
-        (IsGroup(layer) && (layer.fillOpacity != 1 || !layer.rasterFeatures.empty()))) {
-      plan.composite = true;
-      plan.diagnostics.push_back(
-          {"composite-required", layer.id,
-           "Compositing dependencies require the Photoshop document render."});
-    }
-    if (IsGroup(layer)) {
-      AnalyzeLayers(layer.children, plan);
-    } else if (!IsNative(layer) && !IsEmpty(layer)) {
-      plan.rasters.push_back({"layer:" + layer.id, layer.id});
-      if (layer.kind != photoshop::LayerKind::Pixel) {
-        plan.diagnostics.push_back(
-            {"rasterized-content", layer.id,
-             "Photoshop renders this layer; its content is not editable in PAGX."});
-      }
-    } else if (layer.kind == photoshop::LayerKind::Text) {
-      plan.diagnostics.push_back(
-          {"outlined-text", layer.id,
-           "Photoshop text is preserved as vector outlines, without text editing."});
-    }
-  }
-}
-
 using Assets = std::unordered_map<std::string, const photoshop::RasterAsset*>;
 
 void ValidateAsset(const photoshop::RasterAsset& asset) {
@@ -91,9 +48,11 @@ void ValidateAsset(const photoshop::RasterAsset& asset) {
 
 class Builder {
  public:
-  Builder(const photoshop::Document& source, const Assets& assets)
+  Builder(const photoshop::Document& source, const Assets& assets,
+          const PhotoshopConversionPlan& plan)
       : source(source), assets(assets),
         document(PAGXDocument::Make(source.bounds.width, source.bounds.height)) {
+    for (const auto& request : plan.rasters) captures.emplace(request.layerId, &request);
   }
 
   void addRaster(Layer* layer, const std::string& requestId) {
@@ -125,21 +84,32 @@ class Builder {
   }
 
   void addLayers(const std::vector<photoshop::Layer>& input, std::vector<Layer*>& output) {
-    for (const auto& item : input) {
+    for (size_t i = 0; i < input.size(); ++i) {
+      const auto& item = input[i];
+      auto capture = captures.find(item.id);
+      if (capture != captures.end()) {
+        const auto& request = *capture->second;
+        auto layer = document->makeNode<Layer>("ps_layer_" + std::to_string(nextLayer++));
+        layer->name = item.name;
+        addRaster(layer, request.id);
+        output.push_back(layer);
+        i += request.layerIds.size() - 1;
+        continue;
+      }
       if (!item.visible) continue;
       auto layer = document->makeNode<Layer>("ps_layer_" + std::to_string(nextLayer++));
       layer->name = item.name;
       output.push_back(layer);
-      if (IsGroup(item)) {
+      if (IsPhotoshopGroup(item)) {
         layer->alpha = item.opacity;
         layer->passThroughBackground = false;
         addLayers(item.children, layer->children);
-      } else if (IsNative(item) && item.shape) {
+      } else if (IsNativePhotoshopLayer(item) && item.shape) {
         layer->x = -source.bounds.left;
         layer->y = -source.bounds.top;
         layer->alpha = item.opacity;
         BuildPhotoshopShape(document.get(), layer, *item.shape, item.fillOpacity);
-      } else if (IsNative(item) && item.rectangle) {
+      } else if (IsNativePhotoshopLayer(item) && item.rectangle) {
         const auto& value = *item.rectangle;
         layer->x = value.bounds.left - source.bounds.left;
         layer->y = value.bounds.top - source.bounds.top;
@@ -153,7 +123,7 @@ class Builder {
         fill->alpha = item.fillOpacity;
         fill->color = color;
         layer->contents = {rect, fill};
-      } else if (!IsEmpty(item)) {
+      } else if (!IsEmptyPhotoshopLayer(item)) {
         // Leaf opacity/fill/masks/transforms were already baked into the host capture.
         addRaster(layer, "layer:" + item.id);
       }
@@ -162,6 +132,7 @@ class Builder {
 
   const photoshop::Document& source;
   const Assets& assets;
+  std::unordered_map<std::string, const PhotoshopRasterRequest*> captures = {};
   std::shared_ptr<PAGXDocument> document;
   std::vector<std::pair<const photoshop::RasterAsset*, Image*>> images = {};
   size_t nextLayer = 0;
@@ -171,18 +142,7 @@ class Builder {
 PhotoshopConversionPlan PhotoshopImporter::Analyze(const photoshop::Document& source,
                                                    bool forceComposite) {
   photoshop::Validate(source);
-  PhotoshopConversionPlan plan;
-  if (forceComposite || !source.features.empty() || source.colorMode != "RGB" ||
-      source.colorProfile != "sRGB IEC61966-2.1" || source.bitDepth != 8) {
-    plan.composite = true;
-    plan.diagnostics.push_back(
-        {"document-composite", "", "Export the Photoshop document composite."});
-  }
-  AnalyzeLayers(source.layers, plan);
-  if (plan.composite) {
-    plan.rasters = {{"composite", ""}};
-  }
-  return plan;
+  return PlanPhotoshopComposition(source, forceComposite);
 }
 
 std::shared_ptr<PAGXDocument> PhotoshopImporter::Convert(
@@ -203,7 +163,7 @@ std::shared_ptr<PAGXDocument> PhotoshopImporter::Convert(
     if (assets.count(request.id) == 0)
       throw std::invalid_argument("Missing capture: " + request.id);
   }
-  Builder builder(source, assets);
+  Builder builder(source, assets, plan);
   if (plan.composite) {
     auto layer = builder.document->makeNode<Layer>("ps_composite");
     layer->name = source.name;

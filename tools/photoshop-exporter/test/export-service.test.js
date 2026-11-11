@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const { ExportService, ExportCancelled } = require("../src/export-service.js");
 const { NativeBridge } = require("../src/native-bridge.js");
 const { OutputFiles } = require("../src/output-files.js");
-const { PhotoshopHost } = require("../src/photoshop-host.js");
+const { PhotoshopHost, layerKind } = require("../src/photoshop-host.js");
 
 function serviceFixture() {
   const calls = [];
@@ -74,14 +74,14 @@ test("simultaneous exports are rejected", async () => {
 
 test("bridge sends only the view bytes, not adjacent pixels in its backing buffer", () => {
   let captured;
-  const bridge = new NativeBridge({ info: () => '{"protocolVersion":1,"schemaVersion":2}',
+  const bridge = new NativeBridge({ info: () => '{"protocolVersion":2,"schemaVersion":2}',
     addRaster: (id, metadata, bytes) => { captured = new Uint8Array(bytes); } });
   bridge.addRaster("s", { componentSize: 8 }, new Uint8Array([99, 1, 2, 3, 4, 88]).subarray(1, 5));
   assert.deepEqual([...captured], [1, 2, 3, 4]);
   bridge.addRaster("s", { componentSize: 16 }, new Uint16Array([99, 65535, 0, 32895, 88]).subarray(1, 4));
   assert.deepEqual([...new Uint16Array(captured.buffer)], [65535, 0, 32895]);
   assert.throws(() => bridge.addRaster("s", { componentSize: 8 }, new Uint16Array(4)), /位深不匹配/);
-  assert.throws(() => new NativeBridge({ info: () => '{"protocolVersion":2}' }), /不匹配/);
+  assert.throws(() => new NativeBridge({ info: () => '{"protocolVersion":3}' }), /不匹配/);
 });
 
 function storageFixture(signal = {}) {
@@ -202,6 +202,51 @@ test("snapshot preserves the UXP host version and handles nested empty Photoshop
   await assert.rejects(host.snapshot({ doc }), /方形像素/);
 });
 
+test("range captures restore descendants, hide unrelated paint and bake opacity only once", async () => {
+  const bottom = { id: 2, visible: true, opacity: 60, kind: "pixel" };
+  const clipped = { id: 3, visible: true, opacity: 70, kind: "pixel" };
+  const hidden = { id: 4, visible: false, opacity: 80, kind: "pixel" };
+  const group = { id: 1, visible: true, opacity: 50, kind: "group", layers: [hidden, clipped, bottom] };
+  const outside = { id: 5, visible: true, opacity: 30, kind: "pixel" };
+  const doc = { id: 1, layers: [outside, group] };
+  let reading;
+  const ps = { constants: { LayerKind: { GROUP: "group" } }, imaging: { async getPixels() {
+    reading();
+    return { level: 0, sourceBounds: { left: 0, top: 0, right: 1, bottom: 1 }, imageData: {
+      colorSpace: "RGB", colorProfile: "sRGB IEC61966-2.1", componentSize: 8, components: 4,
+      width: 1, height: 1, async getData() { return new Uint8Array(4); }, dispose() {}
+    } };
+  } } };
+  const host = new PhotoshopHost(ps, 100);
+  const document = { doc }, source = { bitDepth: 8, bounds: { left: 0, top: 0, width: 10, height: 10 } };
+  const range = { id: "range", layerId: "ps:2", layerIds: ["ps:2", "ps:3"], parentId: "ps:1" };
+  const captureGroup = { id: "group", layerId: "ps:1", layerIds: ["ps:1"], parentId: "" };
+  await host.prepareCaptures(document, source, { rasters: [range, captureGroup] });
+  reading = () => {
+    assert.equal(group.opacity, 100);
+    assert.equal(bottom.opacity, 60); assert.equal(clipped.opacity, 70);
+    assert.equal(bottom.visible, true); assert.equal(clipped.visible, true);
+    assert.equal(outside.visible, false); assert.equal(hidden.visible, false);
+  };
+  await host.capture(document, source, range, () => {});
+  reading = () => {
+    assert.equal(group.opacity, 50, "captured group alpha is baked, not neutralized");
+    assert.equal(bottom.visible, true); assert.equal(clipped.visible, true);
+    assert.equal(outside.visible, false); assert.equal(hidden.visible, false);
+  };
+  await host.capture(document, source, captureGroup, () => {});
+  await assert.rejects(host.prepareCaptures({ doc }, source, { rasters: [{ ...range, parentId: "" }] }), /父组/);
+});
+
+test("known adjustments retain their dependency semantics and future layer kinds stay unknown", () => {
+  const constants = { LayerKind: { NORMAL: "pixel", INVERSION: "inversion", GRAIN: "grain" } };
+  assert.equal(layerKind({ kind: "inversion" }, constants), "adjustment");
+  assert.equal(layerKind({ kind: "grain" }, constants), "adjustment");
+  assert.equal(layerKind({ kind: "new-kind" }, constants), "unknown");
+  assert.equal(layerKind({}, constants), "unknown");
+  assert.equal(layerKind({ get kind() { throw new Error("Unknown Photoshop kind"); } }, constants), "unknown");
+});
+
 test("panel waits for the real asynchronous Hybrid loader before enabling export", async () => {
   const vm = require("node:vm");
   const fs = require("node:fs");
@@ -217,7 +262,7 @@ test("panel waits for the real asynchronous Hybrid loader before enabling export
     require: name => name in imports ? imports[name] : require(`../${name}`)
   });
   assert.equal(elements.current.disabled, true);
-  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 1, schemaVersion: 2, maxPixels: 100 }) });
+  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 2, schemaVersion: 2, maxPixels: 100 }) });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(errors, []);
   assert.equal(elements.current.disabled, false);

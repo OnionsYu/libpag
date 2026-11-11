@@ -131,8 +131,9 @@ struct Diagnostic {
   std::string message;
 };
 
-// Layer captures are document-composite renders with only that leaf and its ancestors visible.
-// Ancestor opacity is neutralized; the leaf's own appearance, opacity and fill are baked. Images
+// Captures are document-composite renders of a planned sibling range or subtree. Only its source
+// visibility and necessary ancestors are retained. Ancestor opacity is neutralized; the captured
+// roots' appearance, opacity and fill are baked. A captured group includes its descendants. Images
 // must be full-resolution, unassociated-alpha, sRGB PNGs. Transparent captures have empty bytes
 // and zero size. Source metadata remains separate from these derived rendering resources.
 struct RasterAsset {

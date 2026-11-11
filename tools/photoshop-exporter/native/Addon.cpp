@@ -82,7 +82,7 @@ addon_value Guard(addon_env env, Function function) noexcept {
 }
 addon_value Info(addon_env env, addon_callback_info) {
   return Guard(env, [&] {
-    return String(env, JSON{{"protocolVersion", 1},
+    return String(env, JSON{{"protocolVersion", 2},
                             {"schemaVersion", 2},
                             {"version", "0.2.0"},
                             {"maxPixels", MaxPixels},
@@ -104,8 +104,16 @@ addon_value Begin(addon_env env, addon_callback_info info) {
                 {"rasters", JSON::array()},
                 {"diagnostics", JSON::array()}};
     for (const auto& request : session.plan.rasters) {
-      result["rasters"].push_back({{"id", request.id}, {"layerId", request.layerId}});
+      result["rasters"].push_back({{"id", request.id},
+                                   {"layerId", request.layerId},
+                                   {"layerIds", request.layerIds},
+                                   {"parentId", request.parentId}});
     }
+    const auto& statistics = session.plan.statistics;
+    result["statistics"] = {{"vectorShapes", statistics.vectorShapes},
+                            {"outlinedTexts", statistics.outlinedTexts},
+                            {"sourceImages", statistics.sourceImages},
+                            {"fallbackScopes", statistics.fallbackScopes}};
     for (const auto& diagnostic : session.plan.diagnostics) {
       result["diagnostics"].push_back({{"code", diagnostic.code},
                                        {"layerId", diagnostic.layerId},
@@ -137,11 +145,13 @@ addon_value AddRaster(addon_env env, addon_callback_info info) {
     const auto bytesPerComponent = componentSize / 8;
     if ((componentSize != 8 && componentSize != 16) ||
         (componentSize == 16 && metadata.value("fullRange", false) != true) ||
-        metadata.at("colorProfile") != "sRGB IEC61966-2.1" ||
-        metadata.at("alpha") != "straight" || (components != 3 && components != 4) || width < 0 ||
-        height < 0 || (width == 0) != (height == 0) ||
-        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytesPerComponent > MaxPixels ||
-        length != static_cast<size_t>(width) * static_cast<size_t>(height) * components * bytesPerComponent) {
+        metadata.at("colorProfile") != "sRGB IEC61966-2.1" || metadata.at("alpha") != "straight" ||
+        (components != 3 && components != 4) || width < 0 || height < 0 ||
+        (width == 0) != (height == 0) ||
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytesPerComponent >
+            MaxPixels ||
+        length != static_cast<size_t>(width) * static_cast<size_t>(height) * components *
+                      bytesPerComponent) {
       throw std::invalid_argument("Invalid capture pixel contract or memory limit exceeded");
     }
     photoshop::RasterAsset asset;

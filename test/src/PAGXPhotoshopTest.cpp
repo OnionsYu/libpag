@@ -59,6 +59,95 @@ static photoshop::PathComponent PSBox(float left, float top, float right, float 
   component.subpaths = {path};
   return component;
 }
+static photoshop::Layer NativeShape(const std::string& id) {
+  auto layer = Pixel(id);
+  layer.kind = photoshop::LayerKind::Shape;
+  photoshop::Shape shape;
+  shape.components = {PSBox(0, 0, 100, 100)};
+  shape.fill = photoshop::Color{0, 1, 0, 1};
+  layer.shape = shape;
+  return layer;
+}
+
+PAGX_TEST(PAGXPhotoshopTest, LocalBackdropReplacementStopsAtAnIsolatedGroup) {
+  auto source = PSDocument();
+  auto group = Pixel("group");
+  group.kind = photoshop::LayerKind::Group;
+  group.opacity = 0.5f;
+  auto adjustment = Pixel("adjustment");
+  adjustment.kind = photoshop::LayerKind::Adjustment;
+  group.children = {NativeShape("background"), adjustment, NativeShape("above")};
+  source.layers = {NativeShape("outside"), group};
+  const auto plan = pagx::PhotoshopImporter::Analyze(source);
+  EXPECT_FALSE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].parentId, "group");
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"background", "adjustment"}));
+  EXPECT_EQ(plan.statistics.vectorShapes, 2u);
+  auto document = pagx::PhotoshopImporter::Convert(source, {Capture(plan.rasters[0].id)});
+  ASSERT_EQ(document->layers.size(), 2u);
+  auto outputGroup = document->layers[1];
+  EXPECT_FLOAT_EQ(outputGroup->alpha, 0.5f);
+  ASSERT_EQ(outputGroup->children.size(), 2u);
+  EXPECT_FLOAT_EQ(outputGroup->children[0]->alpha, 1.0f);
+  EXPECT_EQ(outputGroup->children[1]->name, "above");
+}
+
+PAGX_TEST(PAGXPhotoshopTest, PassThroughDependenciesIncludeTheOutsideBackdrop) {
+  auto source = PSDocument();
+  auto group = Pixel("pass");
+  group.kind = photoshop::LayerKind::Group;
+  group.blendMode = "passThrough";
+  auto multiply = Pixel("multiply");
+  multiply.blendMode = "multiply";
+  group.children = {NativeShape("inside"), multiply};
+  source.layers = {NativeShape("behind"), group, NativeShape("above")};
+  const auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_FALSE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_TRUE(plan.rasters[0].parentId.empty());
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"behind", "pass"}));
+  EXPECT_EQ(plan.statistics.vectorShapes, 1u);
+  auto document = pagx::PhotoshopImporter::Convert(source, {Capture(plan.rasters[0].id)});
+  ASSERT_EQ(document->layers.size(), 2u);
+  EXPECT_EQ(document->layers[1]->name, "above");
+}
+
+PAGX_TEST(PAGXPhotoshopTest, OverlappingClippingRangesMergeWithoutDuplicatingPaint) {
+  auto source = PSDocument();
+  auto first = NativeShape("clip1");
+  first.clippingBase = "base";
+  auto second = NativeShape("clip2");
+  second.clippingBase = "base";
+  source.layers = {NativeShape("unrelated"), NativeShape("base"), first, second,
+                   NativeShape("above")};
+  const auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_FALSE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"base", "clip1", "clip2"}));
+  auto document = pagx::PhotoshopImporter::Convert(source, {Capture(plan.rasters[0].id)});
+  ASSERT_EQ(document->layers.size(), 3u);
+  EXPECT_EQ(document->layers[0]->name, "unrelated");
+  EXPECT_EQ(document->layers[2]->name, "above");
+}
+
+PAGX_TEST(PAGXPhotoshopTest, GroupMasksBakeGroupOpacityOnceAndKnockoutEscapesIsolation) {
+  auto source = PSDocument();
+  auto group = Pixel("masked");
+  group.kind = photoshop::LayerKind::Group;
+  group.opacity = 0.3f;
+  group.rasterFeatures = {"pixel-mask"};
+  group.children = {NativeShape("inside")};
+  source.layers = {group, NativeShape("outside")};
+  const auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_FALSE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"masked"}));
+  auto document = pagx::PhotoshopImporter::Convert(source, {Capture(plan.rasters[0].id)});
+  EXPECT_FLOAT_EQ(document->layers[0]->alpha, 1.0f);
+  source.layers[0].children[0].features = {"blend:knockout"};
+  EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).composite);
+}
 
 PAGX_TEST(PAGXPhotoshopTest, PreservesVectorBooleanGeometryAndOpacityWithoutImages) {
   auto source = PSDocument();

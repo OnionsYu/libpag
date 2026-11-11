@@ -16,11 +16,20 @@ function rect(bounds, emptyGroup) {
 }
 function layerKind(layer, constants) {
   const k = constants.LayerKind;
-  if (layer.kind === k.GROUP) return "group";
-  if (layer.kind === k.NORMAL) return "pixel";
-  if (layer.kind === k.TEXT) return "text";
-  if (layer.kind === k.SMARTOBJECT) return "smartObject";
-  if ([k.SOLIDFILL, k.GRADIENTFILL, k.PATTERNFILL].includes(layer.kind)) return "fill";
+  let kind;
+  try { kind = layer.kind; } catch (_) { return "unknown"; }
+  // An unavailable enum must not compare equal to a missing/unknown kind.
+  if (kind === undefined || kind === null) return "unknown";
+  if (kind === k.GROUP) return "group";
+  if (kind === k.NORMAL) return "pixel";
+  if (kind === k.TEXT) return "text";
+  if (kind === k.SMARTOBJECT) return "smartObject";
+  if ([k.SOLIDFILL, k.GRADIENTFILL, k.PATTERNFILL].includes(kind)) return "fill";
+  const adjustments = ["BLACKANDWHITE", "BRIGHTNESSCONTRAST", "CHANNELMIXER", "CLARITY",
+    "COLORBALANCE", "COLORLOOKUP", "CURVES", "EXPOSURE", "GRADIENTMAP", "GRAIN",
+    "HUESATURATION", "INVERSION", "LEVELS", "PHOTOFILTER", "POSTERIZE", "SELECTIVECOLOR",
+    "THRESHOLD", "VIBRANCE"];
+  if (adjustments.some(name => k[name] !== undefined && kind === k[name])) return "adjustment";
   return "unknown";
 }
 
@@ -134,7 +143,16 @@ class PhotoshopHost {
       }
     };
     walk(document.doc.layers, []);
-    for (const request of plan.rasters) if (!layers.has(request.layerId)) throw new Error("采集计划引用了不存在的图层");
+    for (const request of plan.rasters) {
+      if (!Array.isArray(request.layerIds) || !request.layerIds.length || request.layerId !== request.layerIds[0])
+        throw new Error("无效的合成范围");
+      for (const id of request.layerIds) {
+        const item = layers.get(id);
+        const parent = item && item.ancestors[item.ancestors.length - 1];
+        if (!item || (parent ? `ps:${parent.id}` : "") !== request.parentId)
+          throw new Error("采集计划引用了不存在的图层或错误的父组");
+      }
+    }
     document.captureLayers = layers;
   }
 
@@ -144,10 +162,14 @@ class PhotoshopHost {
       const state = document.captureLayers;
       const target = state && state.get(request.layerId);
       if (!target) throw new Error("无效的独立采集请求");
-      for (const { layer } of state.values()) layer.visible = false;
-      target.layer.visible = true;
+      const roots = new Set(request.layerIds);
+      // Restore per-source opacity for each request. A previous request may have neutralized it.
+      for (const item of state.values()) {
+        item.layer.opacity = item.opacity;
+        item.layer.visible = item.visible && (roots.has(`ps:${item.layer.id}`) ||
+          item.ancestors.some(ancestor => roots.has(`ps:${ancestor.id}`)));
+      }
       for (const ancestor of target.ancestors) { ancestor.visible = true; ancestor.opacity = 100; }
-      target.layer.opacity = target.opacity;
     }
     const bounds = source.bounds;
     const result = await this.ps.imaging.getPixels({ documentID: doc.id,

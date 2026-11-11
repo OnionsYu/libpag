@@ -98,7 +98,7 @@ async function exportFixture(folder, name = "shapes") {
   const result = await service.run({ input: { kind: "file", file: await folder.getEntry(`${name}.psd`) }, folder });
   if (Array.from(ps.app.documents).map(doc => doc.id).join(",") !== before) throw new Error("Leaked document");
   await write(folder, `${name}.export.json`, { output: result.file.name, composite: result.composite,
-    diagnostics: result.diagnostics });
+    diagnostics: result.diagnostics, statistics: result.statistics, captures: result.captures });
   console.log("PAGX_VECTOR_EXPORT", result.file.nativePath, result.composite, JSON.stringify(result.diagnostics));
   return result;
 }

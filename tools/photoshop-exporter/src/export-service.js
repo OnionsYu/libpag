@@ -54,7 +54,8 @@ class ExportService {
       checkCancelled(signal);
       progress("写入 PAGX…");
       const file = await this.files.publish(folder, name, xml, signal);
-      return { file, composite: plan.composite, diagnostics: plan.diagnostics };
+      return { file, composite: plan.composite, diagnostics: plan.diagnostics, statistics: plan.statistics,
+        captures: plan.rasters };
     } finally {
       try {
         if (sessionId !== undefined) this.bridge.discard(sessionId);

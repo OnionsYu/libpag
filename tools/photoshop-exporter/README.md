@@ -7,7 +7,7 @@
 - **导出当前文档**：复制当前内存文档，包含未保存的修改。原文档的内容、历史和图层选择不变。
 - **选择 PSD 并导出**：由 Photoshop 打开磁盘 PSD，导出后自动关闭。若 Photoshop 返回已打开的文档，拒绝继续，提示改用当前文档入口，避免把未保存内容误当成磁盘内容。
 - 选择输出目录，生成自包含的 `.pagx`，PNG 图像嵌入文件。同名文件自动编号。
-- v0.2 对经过验证的 RGB/sRGB/8 位形状导出 **原生贝塞尔路径、复合路径、纯色填充和实线描边**，保留小数坐标、旋转和越界几何。像素层保留为位图。单色文字使用 Photoshop 生成的矢量轮廓；混色、变形、缺字体文字及其他未映射的局部外观由 Photoshop 渲染；涉及背景的合成暂回退到完整文档。隐藏图层不参与当前画面。
+- v0.2 对经过验证的 RGB/sRGB/8 位形状导出 **原生贝塞尔路径、复合路径、纯色填充和实线描边**，保留小数坐标、旋转和越界几何。像素层保留为位图。单色文字使用 Photoshop 生成的矢量轮廓；混色、变形、缺字体文字及其他未映射的局部外观由 Photoshop 渲染。调整、剪贴、特殊混合按隔离边界计算连续依赖范围，范围外继续保留矢量；未知合成和挖空仍回退整图。隐藏图层不参与当前画面。
 - 支持普通画布、方形像素的 8/16 位源文档；画板、非方形像素、32 位 HDR 和 1 位位图明确拒绝。8 位画布上限 64M 像素，16 位上限 32M，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
 - 已实测 RGB 8/16 位；其他颜色模式和不同 ICC 配置仍需补充宿主样例，不能视为已全面验证。
 
@@ -27,7 +27,7 @@ UXP 面板 main.js
 
 三个规范/转换层均不依赖 UXP。详细语义见 [PS → PAGX 映射规范](../../spec/photoshop_pagx_mapping.zh_CN.md) 和 [PSD 图层规范](../../spec/psd_layer_spec.zh_CN.md)。C++ 输入类型位于 `include/photoshop/Document.h`，JSON 解析器拒绝未知字段、未来版本、缺少字段和非法数据。
 
-桥接协议版本为 1、源快照版本为 2（原生解析器仍接受 v1）：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
+桥接协议版本为 2、源快照版本为 2（原生解析器仍接受 v1）：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划、统计、诊断和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。采集请求包含连续兄弟范围 `layerIds` 及其父组 `parentId`；协议不匹配会拒绝加载。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
 
 原生调用是有大小上限的同步调用，取消在步骤之间生效；编码期间不能保证即时响应。宿主操作在 `executeAsModal` 中，临时文档立即注册 `registerAutoCloseDocument`，包括 Esc 取消都由 Photoshop 清理。没有写入任何源 PSD 的路径。
 
@@ -132,3 +132,20 @@ CLI 的矩形/椭圆路径优化建议单独记录，其他校验诊断均失败
 1.908/255、峰值 196/255，差异位于字形边缘。面板明确提供“矢量优先（文字转轮廓）”
 与“外观快照（整幅位图）”，不能将轮廓描述为可编辑文字或像素完全一致的文字。多色、
 变形、未知字体和未支持的文字绘制方式显式回退。当前未实现 PAGX Text 的原生排版映射。
+
+### 局部合成阶段验证（2026-11-11）
+
+14 项 C++ 测试和 21 项 Node 测试通过，覆盖普通隔离组、穿透组向外的背景依赖、
+重叠剪贴范围合并、组蒙版、隐藏后代及组透明度只应用一次。协议升为 2，旧面板与
+新原生模块不会混用。已新增 `test/host-compositing.js`，生成独立 Photoshop 基准、
+源快照及导出计划；使用 `run(folder)`，再运行：
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder \
+  --names isolated-group pass-through clipping group-mask adjustment --images 1
+```
+
+本阶段提交时宿主窗口访问返回 `cgWindowNotFound`，因此这些新增局部合成样例的
+真实 Photoshop 像素验证尚未完成；上述自动化测试不能替代该宿主验证。
+调整层分类采用 [Adobe LayerKind](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/modules/constants)
+的已知枚举；不存在的枚举、未知类型及读取异常不推断为普通像素层。
