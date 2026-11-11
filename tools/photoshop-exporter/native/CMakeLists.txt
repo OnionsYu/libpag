@@ -23,3 +23,8 @@ if (APPLE)
             "LINKER:-exported_symbol,_uxp_addon_init"
             "LINKER:-exported_symbol,_uxp_addon_terminate")
 endif ()
+
+# Validation utility only; never copied into the UXP runtime package.
+add_executable(photoshop-vector-replay EXCLUDE_FROM_ALL ../test/replay-vector-snapshot.cpp)
+target_include_directories(photoshop-vector-replay PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(photoshop-vector-replay PRIVATE pag)

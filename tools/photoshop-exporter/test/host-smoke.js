@@ -50,12 +50,13 @@ async function run(folder) {
     report.cases.push({ name, passed: true, output: result.file.name, composite: result.composite });
   }
   // Cancel after begin(), while an actual Photoshop document and native session are both owned.
-  for (const mode of ["cancel", "native-error"]) {
+  for (const mode of ["cancel", "native-error", "native-origin"]) {
     const filesBefore = (await folder.getEntries()).map(entry => entry.name).sort().join("\n");
     const signal = {};
     const addRaster = bridge.addRaster;
-    if (mode === "native-error") bridge.addRaster = function(id, metadata, pixels) {
-      return this.addon.addRaster(id, JSON.stringify({ ...metadata, componentSize: 32 }), pixels.buffer);
+    if (mode.startsWith("native-")) bridge.addRaster = function(id, metadata, pixels) {
+      const invalid = mode === "native-error" ? { componentSize: 32 } : { left: true };
+      return this.addon.addRaster(id, JSON.stringify({ ...metadata, ...invalid }), pixels.buffer);
     };
     let caught;
     try {
@@ -66,7 +67,8 @@ async function run(folder) {
     // executeAsModal rewraps thrown errors; the original JS prototype/message may be unavailable.
     const message = String(caught);
     if (!caught || (mode === "cancel" && (!signal.cancelled || !message.includes("已取消导出"))) ||
-        (mode === "native-error" && !message.includes("Invalid capture pixel contract"))) {
+        (mode === "native-error" && !message.includes("Invalid capture pixel contract")) ||
+        (mode === "native-origin" && !message.includes("Invalid capture origin"))) {
       throw new Error(`Unexpected ${mode} result: ${message}`);
     }
     checkState();

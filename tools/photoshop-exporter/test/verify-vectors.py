@@ -34,11 +34,15 @@ def compare(actual, reference):
     return metrics, interior_max
 
 
-def verify(folder, name, max_mae, max_difference, expected_images, reference_suffix=""):
+def verify(folder, name, max_mae, max_difference, expected_images, reference_suffix="", replay=None):
     reference_name = name + reference_suffix
     meta = json.loads((folder / f"{reference_name}.reference.json").read_text())
-    export = json.loads((folder / f"{name}.export.json").read_text())
-    path = folder / export["output"]
+    if replay:
+        path = folder / f"{name}.replayed.pagx"
+        subprocess.run([str(replay), str(folder / f"{name}.snapshot.json"), str(path)], check=True)
+    else:
+        export = json.loads((folder / f"{name}.export.json").read_text())
+        path = folder / export["output"]
     root = ET.parse(path).getroot()
     counts = {tag: len(list(root.iter(tag))) for tag in ("Path", "Image", "Text")}
     if expected_images is not None and counts["Image"] != expected_images:
@@ -67,7 +71,8 @@ def verify(folder, name, max_mae, max_difference, expected_images, reference_suf
     if name == "hole" and reference.getpixel((100, 80))[3] != 0:
         raise AssertionError("The Photoshop compound-path fixture does not contain a transparent hole")
     metrics, interior_max = compare(Image.open(rendered), reference)
-    result = {"name": name, "reference": reference_name, "nodes": counts, "metrics": metrics,
+    result = {"name": name, "reference": reference_name, "output": path.name,
+              "replayed": bool(replay), "nodes": counts, "metrics": metrics,
               "interiorMax": interior_max, "optimizationHints": diagnostics}
     print(json.dumps(result, ensure_ascii=False))
     if interior_max > 2:
@@ -87,7 +92,9 @@ if __name__ == "__main__":
     parser.add_argument("--max-difference", type=float, default=64)
     parser.add_argument("--images", type=int, default=0)
     parser.add_argument("--reference-suffix", default="")
+    parser.add_argument("--replay", type=Path, help="Replay vector-only snapshots using the current core executable")
+    parser.add_argument("--report", default="vector-verification.json", help="Report filename inside the fixture folder")
     args = parser.parse_args()
     results = [verify(args.folder, name, args.max_mae, args.max_difference, args.images,
-                      args.reference_suffix) for name in args.names]
-    (args.folder / "vector-verification.json").write_text(json.dumps(results, indent=2) + "\n")
+                      args.reference_suffix, args.replay) for name in args.names]
+    (args.folder / args.report).write_text(json.dumps(results, indent=2) + "\n")

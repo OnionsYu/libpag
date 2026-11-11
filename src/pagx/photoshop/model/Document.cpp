@@ -32,6 +32,11 @@ void CheckShape(const Shape& shape, size_t& pointCount) {
   Require(!shape.components.empty() && shape.components.size() <= 100000,
           "invalid path components");
   for (const auto& component : shape.components) {
+    Require(component.operation == PathOperation::Add ||
+                component.operation == PathOperation::Subtract ||
+                component.operation == PathOperation::Intersect ||
+                component.operation == PathOperation::Exclude,
+            "invalid path operation");
     Require(!component.subpaths.empty() && component.subpaths.size() <= 100000, "invalid subpaths");
     for (const auto& path : component.subpaths) {
       Require(!path.points.empty(), "empty subpath");
@@ -96,11 +101,11 @@ void CheckLayers(const std::vector<Layer>& layers, size_t depth,
   }
 }
 void CheckClipping(const std::vector<Layer>& layers) {
-  std::unordered_set<std::string> below;
+  std::string base;
   for (const auto& layer : layers) {
-    Require(layer.clippingBase.empty() || below.count(layer.clippingBase) != 0,
-            "clipping base must be a preceding sibling");
-    below.insert(layer.id);
+    Require(layer.clippingBase.empty() || (!base.empty() && layer.clippingBase == base),
+            "clipping base must be the nearest preceding unclipped sibling");
+    if (layer.clippingBase.empty()) base = layer.id;
     CheckClipping(layer.children);
   }
 }

@@ -149,6 +149,21 @@ PAGX_TEST(PAGXPhotoshopTest, GroupMasksBakeGroupOpacityOnceAndKnockoutEscapesIso
   EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).composite);
 }
 
+PAGX_TEST(PAGXPhotoshopTest, RejectsAmbiguousClippingChainsAndInvalidNativePathOperations) {
+  auto source = PSDocument();
+  auto clipped = NativeShape("clipped");
+  clipped.clippingBase = "base";
+  source.layers = {NativeShape("base"), NativeShape("intervening"), clipped};
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+  source.layers = {NativeShape("base"), clipped, NativeShape("second")};
+  source.layers.back().clippingBase = "clipped";
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+  source.layers.back().clippingBase = "base";
+  EXPECT_NO_THROW(pagx::PhotoshopImporter::Analyze(source));
+  source.layers[0].shape->components[0].operation = static_cast<photoshop::PathOperation>(99);
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+}
+
 PAGX_TEST(PAGXPhotoshopTest, PreservesVectorBooleanGeometryAndOpacityWithoutImages) {
   auto source = PSDocument();
   auto layer = Pixel("shape");

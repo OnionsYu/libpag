@@ -156,6 +156,9 @@ addon_value AddRaster(addon_env env, addon_callback_info info) {
     }
     photoshop::RasterAsset asset;
     asset.requestId = requestId;
+    if (!metadata.at("left").is_number() || !metadata.at("top").is_number()) {
+      throw std::invalid_argument("Invalid capture origin");
+    }
     asset.bounds = {metadata.at("left").get<float>(), metadata.at("top").get<float>(),
                     static_cast<float>(width), static_cast<float>(height)};
     if (!std::isfinite(asset.bounds.left) || !std::isfinite(asset.bounds.top)) {

@@ -99,6 +99,7 @@ struct Layer {
   std::string blendMode = "unknown";
   // False means the adapter could not establish compositing semantics. Never infer "normal".
   bool compositingKnown = false;
+  // All members of a clipping chain name the nearest preceding unclipped sibling.
   std::string clippingBase = {};
   // Nonempty means the current native mapping cannot prove backdrop independence.
   std::vector<std::string> features = {};

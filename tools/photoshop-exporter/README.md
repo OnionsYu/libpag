@@ -161,3 +161,35 @@ python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder 
 24 项 Node 测试通过，新增范围/父组名称及统计报告、PAGX 与报告共用编号、报告创建/
 写入/重命名失败、PAGX 发布失败和发布中取消的回滚测试。导出成功不再隐藏降级信息。
 报告计数按源图层和合成范围统计，不等于去重后的 PNG 资源数或 XML 节点总数。
+
+### 当前核心重放和打包验证（2026-11-11）
+
+最终 C++ 测试为 15 项、Node 测试为 24 项，全部通过。额外检查剪贴链必须引用最近
+的未剪贴基底、路径运算枚举有效，以及原生像素元数据的坐标不能是布尔值。
+`host-smoke.js` 新增布尔坐标异常注入；这一新增宿主场景仍待窗口访问恢复后执行。
+
+为了检查后续核心改动，新增仅用于验证的 `photoshop-vector-replay`：读取先前由真实
+Photoshop 采集的源快照，调用**当前**转换核心重新生成 PAGX 并回读校验。它对需要
+位图采集的快照报错，不以旧 PAGX 中的图像替代缺失的宿主采集。
+
+```sh
+cmake --build cmake-build-photoshop --target photoshop-vector-replay -j 8
+python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder \
+  --replay cmake-build-photoshop/tools/photoshop-exporter/native/photoshop-vector-replay \
+  --report geometry-replay-verification.json
+python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder \
+  --names text-72 text-300 --reference-suffix=-outline \
+  --replay cmake-build-photoshop/tools/photoshop-exporter/native/photoshop-vector-replay \
+  --report text-replay-verification.json
+```
+
+4 个形状样例和 2 个文字样例重放通过，均为 0 个 Image，完成 1×/4× 渲染及上述独立
+基准比较；形状 alpha MAE 最大 0.314/255，轮廓文字为 0.086/255 以下。原始文字与
+轮廓之间的差异仍按文字阶段说明，不因重放通过而消失。开发验证产物归档于
+`.tmp/photoshop-vector-validation/`（不进入 Git 或插件包）。
+
+macOS arm64 原生模块已重建并通过 ad-hoc 签名检查，开发 CCX 已生成，包内仅含 15 个
+运行文件/目录项，不包含 SDK、测试脚本或样本。**最终协议 2 插件的重新加载、报告发布
+及新增局部合成场景尚未完成宿主验收**，不得将本段构建和重放结果解释为已通过完整
+Photoshop 回归。渐变、独立蒙版语义、可编辑文字仍未原生映射；使用已说明的局部/整图
+回退或明确拒绝，不能宣称任意 PSD 都输出纯矢量。
