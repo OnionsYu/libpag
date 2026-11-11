@@ -38,6 +38,7 @@ async function run(kind) {
     const folder = await storage.localFileSystem.getFolder();
     if (!folder) throw new ExportCancelled();
     const result = await service.run({ input, folder, signal: activeSignal,
+      forceComposite: document.getElementById("mode").value === "composite",
       progress: message => { status.textContent = message; } });
     status.textContent = `已导出：${result.file.name}`;
     details.textContent = result.file.nativePath;

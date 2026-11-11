@@ -34,8 +34,9 @@ def compare(actual, reference):
     return metrics, interior_max
 
 
-def verify(folder, name, max_mae, max_difference, expected_images):
-    meta = json.loads((folder / f"{name}.reference.json").read_text())
+def verify(folder, name, max_mae, max_difference, expected_images, reference_suffix=""):
+    reference_name = name + reference_suffix
+    meta = json.loads((folder / f"{reference_name}.reference.json").read_text())
     export = json.loads((folder / f"{name}.export.json").read_text())
     path = folder / export["output"]
     root = ET.parse(path).getroot()
@@ -60,13 +61,13 @@ def verify(folder, name, max_mae, max_difference, expected_images):
     if meta["pixelWidth"] and meta["pixelHeight"]:
         pixels = Image.frombytes("RGBA" if meta["components"] == 4 else "RGB",
                                  (meta["pixelWidth"], meta["pixelHeight"]),
-                                 (folder / f"{name}.rgba").read_bytes()).convert("RGBA")
+                                 (folder / f"{reference_name}.rgba").read_bytes()).convert("RGBA")
         reference.paste(pixels, (meta["sourceBounds"]["left"], meta["sourceBounds"]["top"]))
-    reference.save(folder / f"{name}.reference.png")
+    reference.save(folder / f"{reference_name}.reference.png")
     if name == "hole" and reference.getpixel((100, 80))[3] != 0:
         raise AssertionError("The Photoshop compound-path fixture does not contain a transparent hole")
     metrics, interior_max = compare(Image.open(rendered), reference)
-    result = {"name": name, "nodes": counts, "metrics": metrics,
+    result = {"name": name, "reference": reference_name, "nodes": counts, "metrics": metrics,
               "interiorMax": interior_max, "optimizationHints": diagnostics}
     print(json.dumps(result, ensure_ascii=False))
     if interior_max > 2:
@@ -85,6 +86,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-mae", type=float, default=0.5)
     parser.add_argument("--max-difference", type=float, default=64)
     parser.add_argument("--images", type=int, default=0)
+    parser.add_argument("--reference-suffix", default="")
     args = parser.parse_args()
-    results = [verify(args.folder, name, args.max_mae, args.max_difference, args.images) for name in args.names]
+    results = [verify(args.folder, name, args.max_mae, args.max_difference, args.images,
+                      args.reference_suffix) for name in args.names]
     (args.folder / "vector-verification.json").write_text(json.dumps(results, indent=2) + "\n")

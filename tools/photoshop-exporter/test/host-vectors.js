@@ -161,4 +161,27 @@ async function geometryFixtures(folder) {
   }
   console.log("PAGX_GEOMETRY_FIXTURES_DONE");
 }
-module.exports = { probe, exportFixture, geometryFixtures, shape, descriptor, action, write, baseline };
+async function textFixtures(folder) {
+  for (const resolution of [72, 300]) {
+    const name = `text-${resolution}`;
+    await ps.core.executeAsModal(async context => {
+      const doc = await ps.app.createDocument({ name, width: 320, height: 160, resolution,
+        mode: ps.constants.NewDocumentMode.RGB, fill: ps.constants.DocumentFill.TRANSPARENT,
+        profile: "sRGB IEC61966-2.1" });
+      await context.hostControl.registerAutoCloseDocument(doc.id);
+      const layer = await doc.createTextLayer({ name: "English 中文", contents: "PAGX 中文\rVector 2026",
+        fontName: "AdobeHeitiStd-Regular", fontSize: 32, position: { x: 16, y: 55 } });
+      const state = await descriptor(doc, layer);
+      await write(folder, `${name}.descriptor.json`, state);
+      await baseline(doc, folder, name);
+      const file = await folder.createFile(`${name}.psd`, { overwrite: true });
+      await doc.saveAs.psd(file, { embedColorProfile: true }, true);
+      // A second oracle distinguishes Photoshop text hinting from path conversion errors.
+      await layer.textItem.convertToShape();
+      await baseline(doc, folder, `${name}-outline`);
+    }, { commandName: "创建 PAGX 文字验证样例", timeOut: 1 });
+    await exportFixture(folder, name);
+  }
+  console.log("PAGX_TEXT_FIXTURES_DONE");
+}
+module.exports = { probe, exportFixture, geometryFixtures, textFixtures, shape, descriptor, action, write, baseline };

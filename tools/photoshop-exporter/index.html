@@ -3,9 +3,14 @@
 <body>
   <h3>PAGX 导出</h3>
   <p>导出当前画布外观，包含尚未保存的修改。</p>
+  <label for="mode">导出方式</label>
+  <select id="mode">
+    <option value="vector">矢量优先（文字转轮廓）</option>
+    <option value="composite">外观快照（整幅位图）</option>
+  </select>
   <button id="current" disabled>导出当前文档</button>
   <button id="file" disabled>选择 PSD 并导出…</button>
-  <p class="note">选择保存目录后生成 .pagx。同名文件自动编号。初版将 Photoshop 合成画面嵌入 PAGX，保留透明度。</p>
+  <p class="note">矢量优先保留受支持的图形。文字轮廓可缩放，不能作为文字编辑，边缘抗锯齿可能变化。外观快照保留 Photoshop 像素画面。两种方式均保留透明度，同名文件自动编号。</p>
   <p id="status">正在加载导出模块…</p>
   <button id="cancel" disabled>取消</button>
   <p id="details" class="note"></p>

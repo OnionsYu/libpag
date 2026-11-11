@@ -121,6 +121,15 @@ class DescriptorReader {
     if (raw.hasUserMask) source.rasterFeatures.push("pixel-mask");
     if (raw.hasFilterMask) source.rasterFeatures.push("filter-mask");
     if (raw.hasVectorMask && source.kind !== "fill") source.rasterFeatures.push("vector-mask");
+    if (source.kind === "text") {
+      source.text = raw.textKey && typeof raw.textKey.textKey === "string" ? raw.textKey.textKey : "";
+      if (!source.features.length && !source.rasterFeatures.length) {
+        // Lazy load avoids a module initialization cycle with the shared shape/color decoder.
+        const result = await require("./text-outliner.js").outlineText(layer, raw, this);
+        if (result.shape) source.shape = result.shape;
+        else source.rasterFeatures.push(result.reason);
+      }
+    }
     if (source.kind === "fill" && raw.hasVectorMask) {
       source.kind = "shape";
       try {
