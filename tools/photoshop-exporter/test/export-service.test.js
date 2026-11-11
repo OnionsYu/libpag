@@ -74,7 +74,7 @@ test("simultaneous exports are rejected", async () => {
 
 test("bridge sends only the view bytes, not adjacent pixels in its backing buffer", () => {
   let captured;
-  const bridge = new NativeBridge({ info: () => '{"protocolVersion":1,"schemaVersion":1}',
+  const bridge = new NativeBridge({ info: () => '{"protocolVersion":1,"schemaVersion":2}',
     addRaster: (id, metadata, bytes) => { captured = new Uint8Array(bytes); } });
   bridge.addRaster("s", { componentSize: 8 }, new Uint8Array([99, 1, 2, 3, 4, 88]).subarray(1, 5));
   assert.deepEqual([...captured], [1, 2, 3, 4]);
@@ -217,7 +217,7 @@ test("panel waits for the real asynchronous Hybrid loader before enabling export
     require: name => name in imports ? imports[name] : require(`../${name}`)
   });
   assert.equal(elements.current.disabled, true);
-  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 1, schemaVersion: 1, maxPixels: 100 }) });
+  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 1, schemaVersion: 2, maxPixels: 100 }) });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(errors, []);
   assert.equal(elements.current.disabled, false);

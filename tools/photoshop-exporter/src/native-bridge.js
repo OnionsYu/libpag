@@ -5,7 +5,7 @@ class NativeBridge {
   constructor(addon) {
     this.addon = addon;
     this.info = JSON.parse(addon.info());
-    if (this.info.protocolVersion !== 1 || this.info.schemaVersion !== 1) {
+    if (this.info.protocolVersion !== 1 || this.info.schemaVersion !== 2) {
       throw new Error("PAGX 原生模块版本不匹配，请重新安装完整插件");
     }
   }

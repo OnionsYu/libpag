@@ -2,3 +2,4 @@ dist/
 mac/
 win/
 *.ccx
+.tmp/

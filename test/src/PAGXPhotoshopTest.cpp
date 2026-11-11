@@ -10,7 +10,11 @@
 #include "pagx/PAGXExporter.h"
 #include "pagx/PAGXImporter.h"
 #include "pagx/PhotoshopImporter.h"
+#include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Image.h"
+#include "pagx/nodes/Path.h"
+#include "pagx/nodes/Stroke.h"
+#include "renderer/ToTGFX.h"
 #include "tgfx/core/ImageCodec.h"
 #include "tgfx/core/Pixmap.h"
 #include "utils/TestUtils.h"
@@ -30,6 +34,7 @@ photoshop::Layer Pixel(const std::string& id) {
   layer.kind = photoshop::LayerKind::Pixel;
   layer.blendMode = "normal";
   layer.compositingKnown = true;
+  layer.bounds = {0, 0, 2, 1};
   return layer;
 }
 photoshop::RasterAsset Capture(const std::string& id) {
@@ -45,6 +50,80 @@ photoshop::RasterAsset Capture(const std::string& id) {
   return asset;
 }
 }  // namespace
+
+static photoshop::PathComponent PSBox(float left, float top, float right, float bottom) {
+  photoshop::PathComponent component;
+  photoshop::Subpath path;
+  for (auto point : {photoshop::Point{left, top}, {right, top}, {right, bottom}, {left, bottom}})
+    path.points.push_back({point, point, point});
+  component.subpaths = {path};
+  return component;
+}
+
+PAGX_TEST(PAGXPhotoshopTest, PreservesVectorBooleanGeometryAndOpacityWithoutImages) {
+  auto source = PSDocument();
+  auto layer = Pixel("shape");
+  layer.kind = photoshop::LayerKind::Shape;
+  layer.opacity = 0.5f;
+  layer.fillOpacity = 0.4f;
+  photoshop::Shape shape;
+  auto outer = PSBox(-5.5f, 10, 100, 80);
+  auto hole = PSBox(10, 20, 50, 60);
+  hole.operation = photoshop::PathOperation::Subtract;
+  shape.components = {outer, hole};
+  shape.fill = photoshop::Color{1, 0, 0, 1};
+  shape.stroke = photoshop::Stroke{};
+  layer.shape = shape;
+  source.layers = {layer};
+  auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_FALSE(plan.composite);
+  EXPECT_TRUE(plan.rasters.empty());
+  auto document = pagx::PhotoshopImporter::Convert(source, {});
+  auto output = document->layers[0];
+  EXPECT_FLOAT_EQ(output->alpha, 0.5f);
+  EXPECT_FLOAT_EQ(static_cast<pagx::Fill*>(output->contents[1])->alpha, 0.4f);
+  EXPECT_FLOAT_EQ(output->x, 10);
+  EXPECT_FLOAT_EQ(output->y, 20);
+  ASSERT_EQ(output->contents[0]->nodeType(), pagx::NodeType::Path);
+  auto path = ToTGFX(*static_cast<pagx::Path*>(output->contents[0])->data);
+  if (static_cast<pagx::Fill*>(output->contents[1])->fillRule == pagx::FillRule::EvenOdd)
+    path.setFillType(tgfx::PathFillType::EvenOdd);
+  EXPECT_TRUE(path.contains(0, 15));
+  EXPECT_FALSE(path.contains(20, 30));
+  EXPECT_TRUE(path.contains(60, 30));
+  auto xml = pagx::PAGXExporter::ToXML(*document);
+  EXPECT_EQ(xml.find("<Image"), std::string::npos);
+  auto parsed = pagx::PAGXImporter::FromXML(xml);
+  ASSERT_NE(parsed, nullptr);
+  EXPECT_TRUE(parsed->errors.empty());
+}
+
+PAGX_TEST(PAGXPhotoshopTest, PreservesClosingBezierHandlesAndRejectsInvalidGeometry) {
+  auto source = PSDocument();
+  auto layer = Pixel("curve");
+  layer.kind = photoshop::LayerKind::Shape;
+  photoshop::Shape shape;
+  auto component = PSBox(0, 0, 40, 40);
+  component.subpaths[0].points[0].incoming = {-20, 0};
+  component.subpaths[0].points.back().outgoing = {-20, 40};
+  shape.components = {component};
+  shape.fill = photoshop::Color{0, 0, 1, 1};
+  layer.shape = shape;
+  source.layers = {layer};
+  auto document = pagx::PhotoshopImporter::Convert(source, {});
+  auto path = ToTGFX(*static_cast<pagx::Path*>(document->layers[0]->contents[0])->data);
+  EXPECT_TRUE(path.contains(-10, 20));
+  EXPECT_FALSE(path.contains(-21, 20));
+  source.layers[0].shape->components[0].subpaths[0].points[0].incoming.x =
+      std::numeric_limits<float>::infinity();
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+  source.layers[0].shape = shape;
+  source.layers[0].shape->components[0].operation = photoshop::PathOperation::Subtract;
+  EXPECT_EQ(pagx::PhotoshopImporter::Analyze(source).rasters.size(), 1u);
+  source.layers[0].shape = shape;
+  source.layers[0].rasterFeatures = {"pixel-mask"};
+  EXPECT_EQ(pagx::PhotoshopImporter::Analyze(source).rasters.size(), 1u);
+}
 
 PAGX_TEST(PAGXPhotoshopTest, KeepsPaintOrderAndBakesLeafOpacityExactlyOnce) {
   auto source = PSDocument();
@@ -167,7 +246,7 @@ PAGX_TEST(PAGXPhotoshopTest, RejectsMalformedSourceAndCaptureContracts) {
   asset = Capture("layer:one");
   asset.png.resize(7);
   EXPECT_THROW(pagx::PhotoshopImporter::Convert(source, {asset}), std::invalid_argument);
-  source.schemaVersion = 2;
+  source.schemaVersion = 3;
   EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
 }
 
@@ -206,7 +285,7 @@ PAGX_TEST(PAGXPhotoshopTest, ParsesVersionedSnapshotAndRejectsAmbiguousInput) {
   EXPECT_FLOAT_EQ(source.bounds.width, 200);
   EXPECT_TRUE(source.layers.empty());
   auto future = json;
-  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":2");
+  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":3");
   EXPECT_THROW(photoshop::ParseSnapshot(future), std::invalid_argument);
   auto fractional = json;
   fractional.replace(fractional.find("\"bitDepth\":8"), 12, "\"bitDepth\":8.5");

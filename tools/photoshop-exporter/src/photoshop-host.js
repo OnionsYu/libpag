@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Tencent. Licensed under the Apache License, Version 2.0. */
 "use strict";
 const { checkCancelled } = require("./export-service.js");
+const { DescriptorReader } = require("./descriptor-reader.js");
 const SRGB = "sRGB IEC61966-2.1";
 
 function list(collection) { return Array.from(collection); }
@@ -88,47 +89,66 @@ class PhotoshopHost {
       throw new Error("画布尺寸无效或超过内存限制（8 位 64M / 16 位 32M 像素）");
     }
     let count = 0;
-    const walk = (layers, depth) => {
+    const reader = new DescriptorReader(this.ps, doc, this.hostVersion);
+    await reader.init();
+    const walk = async (layers, depth) => {
       if (depth > 128) throw new Error("图层嵌套过深");
       let base = "";
       // Photoshop DOM is top-to-bottom. The source schema and PAGX use paint order.
-      return list(layers).reverse().map(layer => {
+      const result = [];
+      for (const layer of list(layers).reverse()) {
         if (++count > 100000) throw new Error("图层数量超过限制");
         const kind = layerKind(layer, constants);
         const id = `ps:${layer.id}`;
         const clippingBase = layer.isClippingMask ? base : "";
         if (!layer.isClippingMask) base = id;
-        const children = kind === "group" ? walk(layer.layers, depth + 1) : [];
+        const children = kind === "group" ? await walk(layer.layers, depth + 1) : [];
         const emptyGroup = kind === "group" && children.every(child =>
           child.bounds.width === 0 || child.bounds.height === 0);
-        return { id, sourceLayerId: layer.id, name: layer.name, kind,
+        const value = { id, sourceLayerId: layer.id, name: layer.name, kind,
           visible: layer.visible, opacity: layer.opacity / 100,
           fillOpacity: layer.fillOpacity / 100,
           blendMode: layer.blendMode === constants.BlendMode.NORMAL ? "normal" :
             layer.blendMode === constants.BlendMode.PASSTHROUGH ? "passThrough" : String(layer.blendMode),
-          // A DOM blend mode alone does not prove Blend If / knockout / channel blending are default.
-          // Until the descriptor contract is qualified, preserve these semantics via the composite.
-          compositingKnown: false, clippingBase, features: [], bounds: rect(layer.bounds, emptyGroup),
+          compositingKnown: false, clippingBase, features: [], rasterFeatures: [], bounds: rect(layer.bounds, emptyGroup),
           text: "", children };
-      });
+        await reader.read(layer, value);
+        result.push(value);
+      }
+      return result;
     };
-    return { schemaVersion: 1, name: sourceName, hostVersion: this.hostVersion,
+    return { schemaVersion: 2, name: sourceName, hostVersion: this.hostVersion,
       resolution: doc.resolution, colorMode: doc.mode === constants.DocumentMode.RGB ? "RGB" : String(doc.mode),
       colorProfile: doc.colorProfileName, bitDepth,
       bounds: { left: 0, top: 0, width, height },
-      features: [], layers: walk(doc.layers, 0) };
+      features: [], layers: await walk(doc.layers, 0) };
   }
 
   async prepareCaptures(document, source, plan) {
-    // The adapter currently exposes only qualified full-document captures. The converter can accept
-    // richer independent-layer snapshots from future adapters without changing the PAGX model.
-    if (!plan.composite && plan.rasters.length) {
-      throw new Error("此宿主适配器尚未验证独立图层采集");
-    }
+    if (plan.composite || !plan.rasters.length) return;
+    const layers = new Map();
+    const walk = (items, ancestors) => {
+      for (const layer of list(items)) {
+        layers.set(`ps:${layer.id}`, { layer, ancestors, visible: layer.visible, opacity: layer.opacity });
+        if (layer.kind === this.ps.constants.LayerKind.GROUP) walk(layer.layers, [...ancestors, layer]);
+      }
+    };
+    walk(document.doc.layers, []);
+    for (const request of plan.rasters) if (!layers.has(request.layerId)) throw new Error("采集计划引用了不存在的图层");
+    document.captureLayers = layers;
   }
 
-  async capture({ doc }, source, request, consume) {
-    if (request.layerId) throw new Error("不支持的采集请求");
+  async capture(document, source, request, consume) {
+    const { doc } = document;
+    if (request.layerId) {
+      const state = document.captureLayers;
+      const target = state && state.get(request.layerId);
+      if (!target) throw new Error("无效的独立采集请求");
+      for (const { layer } of state.values()) layer.visible = false;
+      target.layer.visible = true;
+      for (const ancestor of target.ancestors) { ancestor.visible = true; ancestor.opacity = 100; }
+      target.layer.opacity = target.opacity;
+    }
     const bounds = source.bounds;
     const result = await this.ps.imaging.getPixels({ documentID: doc.id,
       sourceBounds: { left: bounds.left, top: bounds.top,

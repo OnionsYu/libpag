@@ -1,0 +1,780 @@
+{
+  "hostVersion": "27.4.0",
+  "shapes": {
+    "rectangle": {
+      "raw": {
+        "layerID": 3,
+        "channelRestrictions": [
+          {
+            "_enum": "channel",
+            "_value": "red"
+          },
+          {
+            "_enum": "channel",
+            "_value": "grain"
+          },
+          {
+            "_enum": "channel",
+            "_value": "blue"
+          }
+        ],
+        "hasUserMask": false,
+        "hasVectorMask": true,
+        "layerKind": 4,
+        "hasFilterMask": false,
+        "vectorMaskDensity": 255,
+        "vectorMaskFeather": 0,
+        "adjustment": [
+          {
+            "_obj": "solidColorLayer",
+            "color": {
+              "_obj": "RGBColor",
+              "red": 230.00000149011612,
+              "grain": 40.00000141561031,
+              "blue": 70.00000342726707
+            }
+          }
+        ],
+        "useAlignedRendering": false,
+        "fillEnabled": true,
+        "vectorMaskEnabled": true,
+        "vectorMaskEmpty": false
+      },
+      "path": {
+        "pathName": "矩形 1形状路径",
+        "pathContents": {
+          "_obj": "pathClass",
+          "pathComponents": [
+            {
+              "_obj": "pathComponent",
+              "shapeOperation": {
+                "_enum": "shapeOperation",
+                "_value": "add"
+              },
+              "subpathListKey": [
+                {
+                  "_obj": "subpathsList",
+                  "closedSubpath": true,
+                  "points": [
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 12
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 18
+                        }
+                      }
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 110
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 18
+                        }
+                      }
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 110
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 80
+                        }
+                      }
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 12
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 80
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "itemIndex": 1,
+        "count": 1,
+        "kind": {
+          "_enum": "pathKind",
+          "_value": "normalPath"
+        },
+        "targetPath": false,
+        "ID": 84
+      }
+    },
+    "ellipse": {
+      "raw": {
+        "layerID": 4,
+        "channelRestrictions": [
+          {
+            "_enum": "channel",
+            "_value": "red"
+          },
+          {
+            "_enum": "channel",
+            "_value": "grain"
+          },
+          {
+            "_enum": "channel",
+            "_value": "blue"
+          }
+        ],
+        "hasUserMask": false,
+        "hasVectorMask": true,
+        "layerKind": 4,
+        "hasFilterMask": false,
+        "vectorMaskDensity": 255,
+        "vectorMaskFeather": 0,
+        "adjustment": [
+          {
+            "_obj": "solidColorLayer",
+            "color": {
+              "_obj": "RGBColor",
+              "red": 20.000000707805157,
+              "grain": 170.0000050663948,
+              "blue": 220.00000208616257
+            }
+          }
+        ],
+        "useAlignedRendering": false,
+        "fillEnabled": true,
+        "vectorMaskEnabled": true,
+        "vectorMaskEmpty": false
+      },
+      "path": {
+        "pathName": "椭圆 1形状路径",
+        "pathContents": {
+          "_obj": "pathClass",
+          "pathComponents": [
+            {
+              "_obj": "pathComponent",
+              "shapeOperation": {
+                "_enum": "shapeOperation",
+                "_value": "add"
+              },
+              "subpathListKey": [
+                {
+                  "_obj": "subpathsList",
+                  "closedSubpath": true,
+                  "points": [
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 175.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 30.25
+                        }
+                      },
+                      "forward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 205.875653
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 30.25
+                        }
+                      },
+                      "backward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 145.124347
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 30.25
+                        }
+                      },
+                      "smooth": true
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 230.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 85.25
+                        }
+                      },
+                      "forward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 230.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 115.625653
+                        }
+                      },
+                      "backward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 230.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 54.874347
+                        }
+                      },
+                      "smooth": true
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 175.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 140.25
+                        }
+                      },
+                      "forward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 145.124347
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 140.25
+                        }
+                      },
+                      "backward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 205.875653
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 140.25
+                        }
+                      },
+                      "smooth": true
+                    },
+                    {
+                      "_obj": "pathPoint",
+                      "anchor": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 120.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 85.25
+                        }
+                      },
+                      "forward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 120.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 54.874347
+                        }
+                      },
+                      "backward": {
+                        "_obj": "paint",
+                        "horizontal": {
+                          "_unit": "pixelsUnit",
+                          "_value": 120.5
+                        },
+                        "vertical": {
+                          "_unit": "pixelsUnit",
+                          "_value": 115.625653
+                        }
+                      },
+                      "smooth": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "itemIndex": 1,
+        "count": 1,
+        "kind": {
+          "_enum": "pathKind",
+          "_value": "vectorMask"
+        },
+        "targetPath": true,
+        "ID": 86
+      }
+    }
+  },
+  "advanced": {
+    "knockout": {
+      "version": "1.6.1",
+      "timeStamp": 0.0,
+      "count": 0,
+      "id": 92,
+      "file": "PAGX advanced probe",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "bottom": 128,
+        "right": 128
+      },
+      "selection": [
+        0
+      ],
+      "resolution": 300,
+      "globalLight": {
+        "angle": 90,
+        "altitude": 30
+      },
+      "generatorSettings": false,
+      "profile": "sRGB IEC61966-2.1",
+      "mode": "RGBColor",
+      "depth": 8,
+      "layers": [
+        {
+          "id": 3,
+          "index": 0,
+          "type": "shapeLayer",
+          "name": "矩形 1",
+          "bounds": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "boundsWithFX": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "visible": true,
+          "clipped": false,
+          "blendOptions": {
+            "knockout": "shallow"
+          },
+          "fill": {
+            "color": {
+              "red": 230,
+              "green": 40,
+              "blue": 70
+            },
+            "class": "solidColorLayer"
+          },
+          "generatorSettings": false,
+          "path": {
+            "pathComponents": [
+              {
+                "origin": {
+                  "type": "rect",
+                  "bounds": {
+                    "top": 10,
+                    "left": 10,
+                    "bottom": 100,
+                    "right": 100
+                  }
+                }
+              }
+            ],
+            "bounds": {
+              "top": 10,
+              "left": 10,
+              "bottom": 100,
+              "right": 100
+            },
+            "defaultFill": false
+          }
+        }
+      ]
+    },
+    "blendInterior": {
+      "version": "1.6.1",
+      "timeStamp": 0.0,
+      "count": 0,
+      "id": 92,
+      "file": "PAGX advanced probe",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "bottom": 128,
+        "right": 128
+      },
+      "selection": [
+        0
+      ],
+      "resolution": 300,
+      "globalLight": {
+        "angle": 90,
+        "altitude": 30
+      },
+      "generatorSettings": false,
+      "profile": "sRGB IEC61966-2.1",
+      "mode": "RGBColor",
+      "depth": 8,
+      "layers": [
+        {
+          "id": 3,
+          "index": 0,
+          "type": "shapeLayer",
+          "name": "矩形 1",
+          "bounds": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "boundsWithFX": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "visible": true,
+          "clipped": false,
+          "blendOptions": {
+            "blendInterior": true,
+            "knockout": "shallow"
+          },
+          "fill": {
+            "color": {
+              "red": 230,
+              "green": 40,
+              "blue": 70
+            },
+            "class": "solidColorLayer"
+          },
+          "generatorSettings": false,
+          "path": {
+            "pathComponents": [
+              {
+                "origin": {
+                  "type": "rect",
+                  "bounds": {
+                    "top": 10,
+                    "left": 10,
+                    "bottom": 100,
+                    "right": 100
+                  }
+                }
+              }
+            ],
+            "bounds": {
+              "top": 10,
+              "left": 10,
+              "bottom": 100,
+              "right": 100
+            },
+            "defaultFill": false
+          }
+        }
+      ]
+    },
+    "blendClipped": {
+      "version": "1.6.1",
+      "timeStamp": 0.0,
+      "count": 0,
+      "id": 92,
+      "file": "PAGX advanced probe",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "bottom": 128,
+        "right": 128
+      },
+      "selection": [
+        0
+      ],
+      "resolution": 300,
+      "globalLight": {
+        "angle": 90,
+        "altitude": 30
+      },
+      "generatorSettings": false,
+      "profile": "sRGB IEC61966-2.1",
+      "mode": "RGBColor",
+      "depth": 8,
+      "layers": [
+        {
+          "id": 3,
+          "index": 0,
+          "type": "shapeLayer",
+          "name": "矩形 1",
+          "bounds": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "boundsWithFX": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "visible": true,
+          "clipped": false,
+          "blendOptions": {
+            "blendClipped": false,
+            "blendInterior": true,
+            "knockout": "shallow"
+          },
+          "fill": {
+            "color": {
+              "red": 230,
+              "green": 40,
+              "blue": 70
+            },
+            "class": "solidColorLayer"
+          },
+          "generatorSettings": false,
+          "path": {
+            "pathComponents": [
+              {
+                "origin": {
+                  "type": "rect",
+                  "bounds": {
+                    "top": 10,
+                    "left": 10,
+                    "bottom": 100,
+                    "right": 100
+                  }
+                }
+              }
+            ],
+            "bounds": {
+              "top": 10,
+              "left": 10,
+              "bottom": 100,
+              "right": 100
+            },
+            "defaultFill": false
+          }
+        }
+      ]
+    },
+    "transparencyShapesLayer": {
+      "version": "1.6.1",
+      "timeStamp": 0.0,
+      "count": 0,
+      "id": 92,
+      "file": "PAGX advanced probe",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "bottom": 128,
+        "right": 128
+      },
+      "selection": [
+        0
+      ],
+      "resolution": 300,
+      "globalLight": {
+        "angle": 90,
+        "altitude": 30
+      },
+      "generatorSettings": false,
+      "profile": "sRGB IEC61966-2.1",
+      "mode": "RGBColor",
+      "depth": 8,
+      "layers": [
+        {
+          "id": 3,
+          "index": 0,
+          "type": "shapeLayer",
+          "name": "矩形 1",
+          "bounds": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "boundsWithFX": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "visible": true,
+          "clipped": false,
+          "blendOptions": {
+            "blendClipped": false,
+            "blendInterior": true,
+            "knockout": "shallow",
+            "transparencyShapesLayer": false
+          },
+          "fill": {
+            "color": {
+              "red": 230,
+              "green": 40,
+              "blue": 70
+            },
+            "class": "solidColorLayer"
+          },
+          "generatorSettings": false,
+          "path": {
+            "pathComponents": [
+              {
+                "origin": {
+                  "type": "rect",
+                  "bounds": {
+                    "top": 10,
+                    "left": 10,
+                    "bottom": 100,
+                    "right": 100
+                  }
+                }
+              }
+            ],
+            "bounds": {
+              "top": 10,
+              "left": 10,
+              "bottom": 100,
+              "right": 100
+            },
+            "defaultFill": false
+          }
+        }
+      ]
+    },
+    "blendRange": {
+      "version": "1.6.1",
+      "timeStamp": 0.0,
+      "count": 0,
+      "id": 92,
+      "file": "PAGX advanced probe",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "bottom": 128,
+        "right": 128
+      },
+      "selection": [
+        0
+      ],
+      "resolution": 300,
+      "globalLight": {
+        "angle": 90,
+        "altitude": 30
+      },
+      "generatorSettings": false,
+      "profile": "sRGB IEC61966-2.1",
+      "mode": "RGBColor",
+      "depth": 8,
+      "layers": [
+        {
+          "id": 3,
+          "index": 0,
+          "type": "shapeLayer",
+          "name": "矩形 1",
+          "bounds": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "boundsWithFX": {
+            "top": 10,
+            "left": 10,
+            "bottom": 100,
+            "right": 100
+          },
+          "visible": true,
+          "clipped": false,
+          "blendOptions": {
+            "blendClipped": false,
+            "blendInterior": true,
+            "knockout": "shallow",
+            "transparencyShapesLayer": false,
+            "blendRange": [
+              {
+                "channel": "gray",
+                "srcBlackMin": 20,
+                "srcBlackMax": 40,
+                "srcWhiteMin": 255,
+                "srcWhiteMax": 255,
+                "destBlackMin": 0,
+                "destBlackMax": 0,
+                "destWhiteMin": 255,
+                "desaturate": 255
+              }
+            ]
+          },
+          "fill": {
+            "color": {
+              "red": 230,
+              "green": 40,
+              "blue": 70
+            },
+            "class": "solidColorLayer"
+          },
+          "generatorSettings": false,
+          "path": {
+            "pathComponents": [
+              {
+                "origin": {
+                  "type": "rect",
+                  "bounds": {
+                    "top": 10,
+                    "left": 10,
+                    "bottom": 100,
+                    "right": 100
+                  }
+                }
+              }
+            ],
+            "bounds": {
+              "top": 10,
+              "left": 10,
+              "bottom": 100,
+              "right": 100
+            },
+            "defaultFill": false
+          }
+        }
+      ]
+    }
+  }
+}

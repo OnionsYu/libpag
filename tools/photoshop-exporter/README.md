@@ -7,11 +7,11 @@
 - **导出当前文档**：复制当前内存文档，包含未保存的修改。原文档的内容、历史和图层选择不变。
 - **选择 PSD 并导出**：由 Photoshop 打开磁盘 PSD，导出后自动关闭。若 Photoshop 返回已打开的文档，拒绝继续，提示改用当前文档入口，避免把未保存内容误当成磁盘内容。
 - 选择输出目录，生成自包含的 `.pagx`，PNG 图像嵌入文件。同名文件自动编号。
-- v0.1 宿主适配器导出 **Photoshop 合成画面**，保留透明度，统一转换成 8 位 sRGB。文字、效果和形状的外观保留，内容在 PAGX 中不可独立编辑。隐藏图层不参与当前画面。
+- v0.2 对经过验证的 RGB/sRGB/8 位形状导出 **原生贝塞尔路径、复合路径、纯色填充和实线描边**，保留小数坐标、旋转和越界几何。像素层保留为位图。当前未映射的文字和局部外观由 Photoshop 渲染；涉及背景的合成暂回退到完整文档。隐藏图层不参与当前画面。
 - 支持普通画布、方形像素的 8/16 位源文档；画板、非方形像素、32 位 HDR 和 1 位位图明确拒绝。8 位画布上限 64M 像素，16 位上限 32M，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
 - 已实测 RGB 8/16 位；其他颜色模式和不同 ICC 配置仍需补充宿主样例，不能视为已全面验证。
 
-转换核心已经支持基础图层、组、经过验证的纯色矩形，以及按依赖回退到整幅合成。**DOM 的 normal 模式不足以证明 Blend If、挖空、通道混合等均为默认值**，所以初版宿主适配器将 `compositingKnown` 设为 false。后续只有经过宿主样例验证的适配器才能启用分层采集；不会把错误的独立图层叠加结果当成成功导出。
+**DOM 的 normal 模式及普通 layer get 都不足以证明高级混合为默认值**。适配器同时读取 action 的完整 `json` 属性和图层/路径描述符。已在 Photoshop 27.4、JSON 1.6.1 中验证 Blend If、挖空、内部混合、剪贴混合及透明形状标记可被完整 JSON 检出；缺失能力、其他宿主或 JSON 版本保持 unknown，安全回退。实线描边的非默认透明度、虚线、像素对齐及未支持的填充有明确回退。
 
 ## 分层与协议
 
@@ -27,7 +27,7 @@ UXP 面板 main.js
 
 三个规范/转换层均不依赖 UXP。详细语义见 [PS → PAGX 映射规范](../../spec/photoshop_pagx_mapping.zh_CN.md) 和 [PSD 图层规范](../../spec/psd_layer_spec.zh_CN.md)。C++ 输入类型位于 `include/photoshop/Document.h`，JSON 解析器拒绝未知字段、未来版本、缺少字段和非法数据。
 
-桥接协议版本为 1：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
+桥接协议版本为 1、源快照版本为 2（原生解析器仍接受 v1）：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
 
 原生调用是有大小上限的同步调用，取消在步骤之间生效；编码期间不能保证即时响应。宿主操作在 `executeAsModal` 中，临时文档立即注册 `registerAutoCloseDocument`，包括 Esc 取消都由 Photoshop 清理。没有写入任何源 PSD 的路径。
 
@@ -100,3 +100,20 @@ python3 tools/photoshop-exporter/test/verify-exports.py .tmp/photoshop-validatio
 当前未保存修改另用 `alpha-fixture.psd` 手工测试：将图层不透明度改为 50%，点击“导出当前文档”，不保存原 PSD，再给像素验证脚本传 `--dirty-export <输出.pagx>`。完全透明像素的 RGB 不定义，比较时仅忽略 alpha 为 0 的 RGB，所有 alpha 值仍逐像素比较。测试脚本、SDK 和样本不进入运行包。
 
 官方依据：[Hybrid 构建](https://developer.adobe.com/uxp/guides/how-to/hybrid-plugins/build)、[Imaging](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/imaging)、[模态执行和自动关闭](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/executeasmodal)、[打包](https://developer.adobe.com/uxp/guides/how-to/distribution/package/)。
+
+### 矢量阶段验证（2026-11-11）
+
+新增 `test/host-vectors.js`，从 UDT 调用 `probe(folder)`、`geometryFixtures(folder)`，由
+Photoshop 创建矩形、椭圆、孔洞、内描边和旋转/平移样例。在任何导出变换前独立采集
+RGBA 基准；`exportFixture(folder, name)` 写出源快照、PAGX 及导出诊断。
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder
+```
+
+验证原生路径且 **Image 数为 0**，执行 PAGX 回读和 1×/4× 渲染，分别比较 alpha、黑底、
+白底。不同渲染器的边缘覆盖有差异：允许平均误差 0.5/255、边缘峰值 64/255，同时
+要求平坦区域误差不超过 2/255；不是逐像素完全相同的承诺。孔洞中心另断言透明。
+CLI 的矩形/椭圆路径优化建议单独记录，其他校验诊断均失败。PS 的 Fill 仅影响填充，
+不影响原生形状描边；图层 Opacity 在两者合成后应用。测试发现的非默认描边透明度
+不能直接等价映射，宿主适配器因此保留回退。

@@ -6,13 +6,24 @@
 `PhotoshopImporter` 负责分析与转换，输出已有 `PAGXDocument`；XML 由 `PAGXExporter`
 生成。入口接收 Photoshop 采集的快照，不解析 PSD 文件字节。
 
-协议版本为 1。图层树按从底到顶排列，所有边界采用文档像素坐标，保留负坐标及小数。
+桥接协议版本为 1，源快照版本为 2（兼容 v1）。图层树按从底到顶排列，所有边界采用文档像素坐标，保留负坐标及小数。
 Opacity、Fill 和颜色分量为 0～1。`compositingKnown=false` 表示合成信息未知，不能
 视为 Normal。`features` 保存当前转换器无法原生表达的能力标记。隐藏子树不参与当前
 状态输出，但仍受结构校验。该导出不保证修改可见性后的其他状态等价。
 
 源模型保存图层身份与源属性；派生资源保存 Photoshop 实际渲染结果。二者不得混用。
 矩形原生映射仅接受适配器已验证的 `SolidRectangle`，不得从普通图层 bounds 猜测形状。
+
+v2 增加 `Shape`：有序路径组件、Add/Subtract/Intersect/Exclude、组件 winding 规则、
+子路径闭合状态及 anchor/incoming/outgoing 绝对控制点。控制点已经包含 Photoshop
+变换，不再应用 live-shape origin 的 transform。布尔运算保持矢量几何；初始减法、
+含开放路径的多组件布尔运算目前回退。颜色和实线描边保存为源属性，不混入图像资源。
+Fill 透明度作用于填充，图层 Opacity 作用于填充与描边的组合。`rasterFeatures` 表示
+已确认仅影响本层的外观；`features` 表示未能证明背景独立的语义。二者不能互换。
+
+宿主适配器使用 action `json` 属性读取高级混合信息，并以普通 layer/path 描述符读取
+像素单位、蒙版、纯色和描边。普通 layer get 会漏掉非默认高级混合属性。仅在实测的
+Photoshop 27.4 / JSON 1.6.1 契约内把缺失的高级混合属性解释为默认；其他情况仍是未知。
 
 ## 分析和采集
 

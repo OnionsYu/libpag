@@ -1,7 +1,7 @@
 {
   "id": "org.libpag.photoshop.exporter",
   "name": "PAGX 导出",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "manifestVersion": 6,
   "main": "index.html",
   "host": { "app": "PS", "minVersion": "27.4.0", "data": { "apiVersion": 2 } },

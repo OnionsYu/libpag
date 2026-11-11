@@ -24,8 +24,50 @@ void CheckRect(const Rect& rect) {
               std::isfinite(rect.left + rect.width) && std::isfinite(rect.top + rect.height),
           "invalid bounds");
 }
+void CheckColor(const Color& color) {
+  Require(Unit(color.red) && Unit(color.green) && Unit(color.blue) && Unit(color.alpha),
+          "invalid color");
+}
+void CheckShape(const Shape& shape, size_t& pointCount) {
+  Require(!shape.components.empty() && shape.components.size() <= 100000,
+          "invalid path components");
+  for (const auto& component : shape.components) {
+    Require(!component.subpaths.empty() && component.subpaths.size() <= 100000, "invalid subpaths");
+    for (const auto& path : component.subpaths) {
+      Require(!path.points.empty(), "empty subpath");
+      pointCount += path.points.size();
+      Require(pointCount <= 1000000, "path point count exceeds 1000000");
+      for (const auto& point : path.points) {
+        for (const auto& value : {point.anchor, point.incoming, point.outgoing}) {
+          Require(std::isfinite(value.x) && std::isfinite(value.y), "invalid path point");
+        }
+      }
+    }
+  }
+  if (shape.fill) CheckColor(*shape.fill);
+  if (shape.stroke) {
+    const auto& stroke = *shape.stroke;
+    CheckColor(stroke.color);
+    Require(std::isfinite(stroke.width) && stroke.width >= 0 && Unit(stroke.opacity) &&
+                std::isfinite(stroke.miterLimit) && stroke.miterLimit >= 1 &&
+                std::isfinite(stroke.dashOffset),
+            "invalid stroke dimensions");
+    Require(stroke.cap == "butt" || stroke.cap == "round" || stroke.cap == "square", "invalid cap");
+    Require(stroke.join == "miter" || stroke.join == "round" || stroke.join == "bevel",
+            "invalid join");
+    Require(stroke.align == "center" || stroke.align == "inner" || stroke.align == "outer",
+            "invalid alignment");
+    Require(stroke.dashes.size() <= 1024, "too many stroke dashes");
+    bool positive = stroke.dashes.empty();
+    for (auto dash : stroke.dashes) {
+      Require(std::isfinite(dash) && dash >= 0, "invalid stroke dash");
+      positive |= dash > 0;
+    }
+    Require(positive, "zero-length dash pattern");
+  }
+}
 void CheckLayers(const std::vector<Layer>& layers, size_t depth,
-                 std::unordered_set<std::string>& ids) {
+                 std::unordered_set<std::string>& ids, size_t& pointCount, int version) {
   Require(depth <= 128, "layer nesting exceeds 128");
   for (const auto& layer : layers) {
     Require(!layer.id.empty() && ids.insert(layer.id).second, "empty or duplicate layer ID");
@@ -43,7 +85,14 @@ void CheckLayers(const std::vector<Layer>& layers, size_t depth,
                   rectangle.roundness >= 0,
               "invalid rectangle appearance");
     }
-    CheckLayers(layer.children, depth + 1, ids);
+    if (layer.shape) {
+      Require(version >= 2 && !layer.rectangle &&
+                  (layer.kind == LayerKind::Shape || layer.kind == LayerKind::Text),
+              "invalid shape owner or schema");
+      CheckShape(*layer.shape, pointCount);
+    }
+    Require(version >= 2 || layer.rasterFeatures.empty(), "v2 appearance in v1 snapshot");
+    CheckLayers(layer.children, depth + 1, ids, pointCount, version);
   }
 }
 void CheckClipping(const std::vector<Layer>& layers) {
@@ -58,14 +107,15 @@ void CheckClipping(const std::vector<Layer>& layers) {
 }  // namespace
 
 void Validate(const Document& document) {
-  Require(document.schemaVersion == 1, "unsupported schema version");
+  Require(document.schemaVersion == 1 || document.schemaVersion == 2, "unsupported schema version");
   CheckRect(document.bounds);
   Require(document.bounds.width > 0 && document.bounds.height > 0, "empty export canvas");
   Require(std::isfinite(document.resolution) && document.resolution > 0, "invalid resolution");
   Require(document.bitDepth == 8 || document.bitDepth == 16 || document.bitDepth == 32,
           "unsupported component depth");
   std::unordered_set<std::string> ids;
-  CheckLayers(document.layers, 0, ids);
+  size_t pointCount = 0;
+  CheckLayers(document.layers, 0, ids, pointCount, document.schemaVersion);
   CheckClipping(document.layers);
 }
 }  // namespace photoshop

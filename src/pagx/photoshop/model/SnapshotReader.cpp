@@ -5,8 +5,8 @@
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include <nlohmann/json.hpp>
 #include <cmath>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,8 +38,8 @@ float Number(const JSON& value) {
 }
 Rect Bounds(const JSON& value) {
   Keys(value, {"left", "top", "width", "height"});
-  return {Number(value.at("left")), Number(value.at("top")),
-          Number(value.at("width")), Number(value.at("height"))};
+  return {Number(value.at("left")), Number(value.at("top")), Number(value.at("width")),
+          Number(value.at("height"))};
 }
 LayerKind Kind(const std::string& value) {
   static const std::unordered_map<std::string, LayerKind> kinds = {
@@ -56,13 +56,76 @@ LayerKind Kind(const std::string& value) {
   if (found == kinds.end()) throw std::invalid_argument("Unknown layer kind: " + value);
   return found->second;
 }
+Point ReadPoint(const JSON& value) {
+  Keys(value, {"x", "y"});
+  return {Number(value.at("x")), Number(value.at("y"))};
+}
+Color ReadColor(const JSON& value) {
+  Keys(value, {"red", "green", "blue", "alpha"});
+  return {Number(value.at("red")), Number(value.at("green")), Number(value.at("blue")),
+          Number(value.at("alpha"))};
+}
+Shape ReadShape(const JSON& value) {
+  Keys(value, {"components", "fill", "stroke"});
+  Shape shape;
+  const auto& components = value.at("components");
+  if (!components.is_array()) throw std::invalid_argument("Expected path components array");
+  for (const auto& c : components) {
+    Keys(c, {"operation", "winding", "subpaths"});
+    PathComponent component;
+    const auto operation = c.at("operation").get<std::string>();
+    if (operation == "add") component.operation = PathOperation::Add;
+    else if (operation == "subtract")
+      component.operation = PathOperation::Subtract;
+    else if (operation == "intersect")
+      component.operation = PathOperation::Intersect;
+    else if (operation == "exclude")
+      component.operation = PathOperation::Exclude;
+    else
+      throw std::invalid_argument("Invalid path operation");
+    component.winding = c.at("winding").get<bool>();
+    if (!c.at("subpaths").is_array()) throw std::invalid_argument("Expected subpaths array");
+    for (const auto& p : c.at("subpaths")) {
+      Keys(p, {"closed", "points"});
+      Subpath path;
+      path.closed = p.at("closed").get<bool>();
+      if (!p.at("points").is_array()) throw std::invalid_argument("Expected points array");
+      for (const auto& v : p.at("points")) {
+        Keys(v, {"anchor", "incoming", "outgoing"});
+        path.points.push_back(
+            {ReadPoint(v.at("anchor")), ReadPoint(v.at("incoming")), ReadPoint(v.at("outgoing"))});
+      }
+      component.subpaths.push_back(std::move(path));
+    }
+    shape.components.push_back(std::move(component));
+  }
+  if (value.contains("fill")) shape.fill = ReadColor(value.at("fill"));
+  if (value.contains("stroke")) {
+    const auto& v = value.at("stroke");
+    Keys(v, {"color", "width", "opacity", "miterLimit", "cap", "join", "align", "dashes",
+             "dashOffset"});
+    Stroke stroke;
+    stroke.color = ReadColor(v.at("color"));
+    stroke.width = Number(v.at("width"));
+    stroke.opacity = Number(v.at("opacity"));
+    stroke.miterLimit = Number(v.at("miterLimit"));
+    stroke.cap = v.at("cap").get<std::string>();
+    stroke.join = v.at("join").get<std::string>();
+    stroke.align = v.at("align").get<std::string>();
+    stroke.dashOffset = Number(v.at("dashOffset"));
+    if (!v.at("dashes").is_array()) throw std::invalid_argument("Expected dashes array");
+    for (const auto& dash : v.at("dashes")) stroke.dashes.push_back(Number(dash));
+    shape.stroke = std::move(stroke);
+  }
+  return shape;
+}
 std::vector<Layer> Layers(const JSON& value) {
   if (!value.is_array()) throw std::invalid_argument("Expected layers array");
   std::vector<Layer> result;
   for (const auto& item : value) {
     Keys(item, {"id", "sourceLayerId", "name", "kind", "visible", "opacity", "fillOpacity",
                 "blendMode", "compositingKnown", "clippingBase", "features", "bounds", "text",
-                "rectangle", "children"});
+                "rectangle", "children", "shape", "rasterFeatures"});
     Layer layer;
     layer.id = item.at("id").get<std::string>();
     layer.sourceLayerId = Integer(item.at("sourceLayerId"));
@@ -75,6 +138,8 @@ std::vector<Layer> Layers(const JSON& value) {
     layer.compositingKnown = item.at("compositingKnown").get<bool>();
     layer.clippingBase = item.at("clippingBase").get<std::string>();
     layer.features = item.at("features").get<std::vector<std::string>>();
+    if (item.contains("rasterFeatures"))
+      layer.rasterFeatures = item.at("rasterFeatures").get<std::vector<std::string>>();
     layer.bounds = Bounds(item.at("bounds"));
     layer.text = item.at("text").get<std::string>();
     if (item.contains("rectangle")) {
@@ -89,6 +154,7 @@ std::vector<Layer> Layers(const JSON& value) {
       rect.roundness = Number(v.at("roundness"));
       layer.rectangle = rect;
     }
+    if (item.contains("shape")) layer.shape = ReadShape(item.at("shape"));
     layer.children = Layers(item.at("children"));
     result.push_back(std::move(layer));
   }

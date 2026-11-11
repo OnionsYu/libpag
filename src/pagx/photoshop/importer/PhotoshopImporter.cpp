@@ -9,6 +9,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
+#include "PhotoshopShapeBuilder.h"
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Image.h"
 #include "pagx/nodes/ImagePattern.h"
@@ -22,6 +23,14 @@ namespace {
 bool IsGroup(const photoshop::Layer& layer) {
   return layer.kind == photoshop::LayerKind::Group;
 }
+bool IsNative(const photoshop::Layer& layer) {
+  return layer.rasterFeatures.empty() &&
+         (layer.rectangle || (layer.shape && CanBuildShape(*layer.shape)));
+}
+bool IsEmpty(const photoshop::Layer& layer) {
+  return layer.kind == photoshop::LayerKind::Pixel && layer.bounds.width == 0 &&
+         layer.bounds.height == 0 && layer.rasterFeatures.empty();
+}
 void AnalyzeLayers(const std::vector<photoshop::Layer>& layers, PhotoshopConversionPlan& plan) {
   for (const auto& layer : layers) {
     if (!layer.visible) continue;
@@ -31,7 +40,8 @@ void AnalyzeLayers(const std::vector<photoshop::Layer>& layers, PhotoshopConvers
                     layer.kind != photoshop::LayerKind::Adjustment &&
                     layer.kind != photoshop::LayerKind::Artboard;
     if (!layer.compositingKnown || !safeBlend || !safeKind || !layer.clippingBase.empty() ||
-        !layer.features.empty() || (IsGroup(layer) && layer.fillOpacity != 1)) {
+        !layer.features.empty() ||
+        (IsGroup(layer) && (layer.fillOpacity != 1 || !layer.rasterFeatures.empty()))) {
       plan.composite = true;
       plan.diagnostics.push_back(
           {"composite-required", layer.id,
@@ -39,13 +49,17 @@ void AnalyzeLayers(const std::vector<photoshop::Layer>& layers, PhotoshopConvers
     }
     if (IsGroup(layer)) {
       AnalyzeLayers(layer.children, plan);
-    } else if (!layer.rectangle) {
+    } else if (!IsNative(layer) && !IsEmpty(layer)) {
       plan.rasters.push_back({"layer:" + layer.id, layer.id});
       if (layer.kind != photoshop::LayerKind::Pixel) {
         plan.diagnostics.push_back(
             {"rasterized-content", layer.id,
              "Photoshop renders this layer; its content is not editable in PAGX."});
       }
+    } else if (layer.kind == photoshop::LayerKind::Text) {
+      plan.diagnostics.push_back(
+          {"outlined-text", layer.id,
+           "Photoshop text is preserved as vector outlines, without text editing."});
     }
   }
 }
@@ -120,7 +134,12 @@ class Builder {
         layer->alpha = item.opacity;
         layer->passThroughBackground = false;
         addLayers(item.children, layer->children);
-      } else if (item.rectangle) {
+      } else if (IsNative(item) && item.shape) {
+        layer->x = -source.bounds.left;
+        layer->y = -source.bounds.top;
+        layer->alpha = item.opacity;
+        BuildPhotoshopShape(document.get(), layer, *item.shape, item.fillOpacity);
+      } else if (IsNative(item) && item.rectangle) {
         const auto& value = *item.rectangle;
         layer->x = value.bounds.left - source.bounds.left;
         layer->y = value.bounds.top - source.bounds.top;
@@ -134,7 +153,7 @@ class Builder {
         fill->alpha = item.fillOpacity;
         fill->color = color;
         layer->contents = {rect, fill};
-      } else {
+      } else if (!IsEmpty(item)) {
         // Leaf opacity/fill/masks/transforms were already baked into the host capture.
         addRaster(layer, "layer:" + item.id);
       }

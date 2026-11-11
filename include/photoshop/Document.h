@@ -44,6 +44,50 @@ struct SolidRectangle {
   float roundness = 0;
 };
 
+struct Point {
+  float x = 0;
+  float y = 0;
+};
+struct PathPoint {
+  Point anchor = {};
+  Point incoming = {};
+  Point outgoing = {};
+};
+struct Subpath {
+  bool closed = true;
+  std::vector<PathPoint> points = {};
+};
+enum class PathOperation { Add, Subtract, Intersect, Exclude };
+struct PathComponent {
+  PathOperation operation = PathOperation::Add;
+  bool winding = false;
+  std::vector<Subpath> subpaths = {};
+};
+struct Color {
+  float red = 0;
+  float green = 0;
+  float blue = 0;
+  float alpha = 1;
+};
+struct Stroke {
+  Color color = {};
+  float width = 1;
+  float opacity = 1;
+  float miterLimit = 4;
+  std::string cap = "butt";
+  std::string join = "miter";
+  std::string align = "center";
+  std::vector<float> dashes = {};
+  float dashOffset = 0;
+};
+// Control points are absolute document pixels AFTER the host's shape transform. Never reapply
+// the live-shape origin transform or infer geometry from the raster bounds.
+struct Shape {
+  std::vector<PathComponent> components = {};
+  std::optional<Color> fill = {};
+  std::optional<Stroke> stroke = {};
+};
+
 struct Layer {
   std::string id = {};
   int64_t sourceLayerId = -1;
@@ -58,14 +102,17 @@ struct Layer {
   std::string clippingBase = {};
   // Nonempty means the current native mapping cannot prove backdrop independence.
   std::vector<std::string> features = {};
+  // Known local appearance that needs a host render, but does not read the backdrop.
+  std::vector<std::string> rasterFeatures = {};
   Rect bounds = {};
   std::string text = {};
   std::optional<SolidRectangle> rectangle = {};
+  std::optional<Shape> shape = {};
   std::vector<Layer> children = {};
 };
 
 struct Document {
-  int schemaVersion = 1;
+  int schemaVersion = 2;
   std::string name = {};
   std::string hostVersion = {};
   float resolution = 72;
