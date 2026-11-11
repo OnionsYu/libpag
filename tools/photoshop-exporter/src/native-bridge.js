@@ -1,0 +1,25 @@
+/* Copyright (C) 2026 Tencent. Licensed under the Apache License, Version 2.0. */
+"use strict";
+
+class NativeBridge {
+  constructor(addon) {
+    this.addon = addon;
+    this.info = JSON.parse(addon.info());
+    if (this.info.protocolVersion !== 1 || this.info.schemaVersion !== 1) {
+      throw new Error("PAGX 原生模块版本不匹配，请重新安装完整插件");
+    }
+  }
+  begin(source, forceComposite) {
+    return JSON.parse(this.addon.begin(JSON.stringify(source), forceComposite));
+  }
+  addRaster(sessionId, metadata, bytes) {
+    if (!(bytes instanceof Uint8Array)) throw new Error("需要 8 位图像数据");
+    const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    this.addon.addRaster(sessionId, JSON.stringify(metadata), buffer);
+  }
+  finish(sessionId) { return this.addon.finish(sessionId); }
+  discard(sessionId) { this.addon.discard(sessionId); }
+}
+
+module.exports = { NativeBridge };

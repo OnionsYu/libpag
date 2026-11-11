@@ -1,0 +1,59 @@
+# Photoshop PAGX 导出插件
+
+真正运行在 Photoshop 中的 UXP Hybrid 面板，C++ addon 直接链接本仓库的 PAGX 实现。导出时不启动外部 CLI，也不依赖云端 PSD 解析。
+
+## 当前能力
+
+- **导出当前文档**：复制当前内存文档，包含未保存的修改。原文档的内容、历史和图层选择不变。
+- **选择 PSD 并导出**：由 Photoshop 打开磁盘 PSD，导出后自动关闭。若 Photoshop 返回已打开的文档，拒绝继续，提示改用当前文档入口，避免把未保存内容误当成磁盘内容。
+- 选择输出目录，生成自包含的 `.pagx`，PNG 图像嵌入文件。同名文件自动编号。
+- v0.1 宿主适配器导出 **Photoshop 合成画面**，保留透明度，统一转换成 8 位 sRGB。文字、效果和形状的外观保留，内容在 PAGX 中不可独立编辑。隐藏图层不参与当前画面。
+- 支持 8/16 位源文档；32 位 HDR 和 1 位位图明确拒绝。单画布上限 64M 像素，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
+
+转换核心已经支持基础图层、组、经过验证的纯色矩形，以及按依赖回退到整幅合成。**DOM 的 normal 模式不足以证明 Blend If、挖空、通道混合等均为默认值**，所以初版宿主适配器将 `compositingKnown` 设为 false。后续只有经过宿主样例验证的适配器才能启用分层采集；不会把错误的独立图层叠加结果当成成功导出。
+
+## 分层与协议
+
+```text
+UXP 面板 main.js
+  → ExportService（事务、取消、进度）
+  → PhotoshopHost（DOM / Imaging，临时文档）
+  → photoshop::Document（版本化 PS 图层规范层）
+  → PhotoshopImporter（分析计划、转换器）
+  → PAGXDocument / PAGXExporter / PAGXImporter（PAGX 规范、序列化、回读校验）
+  → OutputFiles（完整写入临时文件，改名发布）
+```
+
+三个规范/转换层均不依赖 UXP。详细语义见 [PS → PAGX 映射规范](../../spec/photoshop_pagx_mapping.zh_CN.md) 和 [PSD 图层规范](../../spec/psd_layer_spec.zh_CN.md)。C++ 输入类型位于 `include/photoshop/Document.h`，JSON 解析器拒绝未知字段、未来版本、缺少字段和非法数据。
+
+桥接协议版本为 1：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、8 位 sRGB、straight alpha；不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
+
+原生调用是有大小上限的同步调用，取消在步骤之间生效；编码期间不能保证即时响应。宿主操作在 `executeAsModal` 中，临时文档立即注册 `registerAutoCloseDocument`，包括 Esc 取消都由 Photoshop 清理。没有写入任何源 PSD 的路径。
+
+## 构建和加载
+
+目标基线为 Photoshop 27.4.0、Manifest 6、Photoshop API 2。需本仓库可正常构建、Node.js 20+、CMake 和平台 C++ 工具链。
+
+1. 从 [Adobe Developer Console](https://developer.adobe.com/console/) 下载并解压 UXP Hybrid Plugin SDK。SDK 不进仓库。
+2. 在此目录构建：
+
+   ```sh
+   UXP_SDK_DIR=/path/to/uxp-hybrid-plugin-sdk npm run build:native
+   npm test
+   npm run package
+   ```
+
+   `PAGX_BUILD_DIR` 可指定 CMake 目录；`PAGX_ARCH` 可为 `arm64` 或 `x64`，需要相应架构的仓库依赖。Windows 构建需配置环境变量，并使用 Visual Studio x64 工具链。
+
+3. 使用官方 **UXP Developer Tool**，按 Adobe 提示启用开发者模式，添加本目录的 `manifest.json`，Load 后在 Photoshop 的“增效工具”菜单中打开 **PAGX 导出**。
+4. 构建脚本将 addon 放在 `mac/arm64`、`mac/x64` 或 `win/x64`；`dist/plugin` 是仅包含运行文件的加载目录；`dist/*-dev.ccx` 是本地开发包。Windows 用 UDT 对 `dist/plugin` 打包。
+
+macOS 构建脚本仅做开发用 ad-hoc 签名。正式分发需 Developer ID 签名、公证以及目标架构实测；本地开发包不代表已通过 Marketplace 审核。当前验证记录仅覆盖本机 macOS arm64，不能据此宣称 Windows / Intel 已验证。
+
+## 分阶段验证
+
+- 第一阶段：C++ 模型和转换器，`PAGXPhotoshopTest.*` 最初 7 项通过，提交 `e6a1c7d8b`。
+- 第二阶段：正式 Adobe SDK 编译 addon；快照 JSON 校验；Node 业务测试覆盖资源释放、取消、并发、像素视图、同名文件和源文档生命周期。模拟宿主测试不等同于 Photoshop 实测。
+- 宿主阶段：用 UDT 加载真实面板，检查当前文档和磁盘 PSD 两个入口、透明像素、实际采集 bounds、导出后文档状态、生成 PAGX 的回读及渲染。实际结果另记于验证记录，不将未执行项目写成通过。
+
+官方依据：[Hybrid 构建](https://developer.adobe.com/uxp/guides/how-to/hybrid-plugins/build)、[Imaging](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/imaging)、[模态执行和自动关闭](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/executeasmodal)、[打包](https://developer.adobe.com/uxp/guides/how-to/distribution/package/)。

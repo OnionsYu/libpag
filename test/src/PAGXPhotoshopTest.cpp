@@ -195,4 +195,28 @@ PAGX_TEST(PAGXPhotoshopTest, ConvertsNativeRectangleWithoutHostRasterAndSupports
   document = pagx::PhotoshopImporter::Convert(source, {empty}, true);
   EXPECT_TRUE(document->layers[0]->contents.empty());
 }
+
+PAGX_TEST(PAGXPhotoshopTest, ParsesVersionedSnapshotAndRejectsAmbiguousInput) {
+  const std::string json = R"({"schemaVersion":1,"name":"中文 & <document>",
+    "hostVersion":"27.4.0","resolution":72,"colorMode":"RGB",
+    "colorProfile":"sRGB IEC61966-2.1","bitDepth":8,
+    "bounds":{"left":0,"top":0,"width":200,"height":100},"features":[],"layers":[]})";
+  auto source = photoshop::ParseSnapshot(json);
+  EXPECT_EQ(source.name, "中文 & <document>");
+  EXPECT_FLOAT_EQ(source.bounds.width, 200);
+  EXPECT_TRUE(source.layers.empty());
+  auto future = json;
+  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":2");
+  EXPECT_THROW(photoshop::ParseSnapshot(future), std::invalid_argument);
+  auto fractional = json;
+  fractional.replace(fractional.find("\"bitDepth\":8"), 12, "\"bitDepth\":8.5");
+  EXPECT_THROW(photoshop::ParseSnapshot(fractional), std::invalid_argument);
+  auto unknown = json;
+  unknown.insert(1, "\"futureField\":true,");
+  EXPECT_THROW(photoshop::ParseSnapshot(unknown), std::invalid_argument);
+  auto huge = json;
+  huge.replace(huge.find("\"bitDepth\":8"), 12, "\"bitDepth\":18446744073709551615");
+  EXPECT_THROW(photoshop::ParseSnapshot(huge), std::invalid_argument);
+  EXPECT_THROW(photoshop::ParseSnapshot("{}"), std::invalid_argument);
+}
 }  // namespace pag

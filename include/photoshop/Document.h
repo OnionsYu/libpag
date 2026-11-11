@@ -98,4 +98,7 @@ struct RasterAsset {
 // non-finite numbers, invalid ranges, or excessive depth/node count. Does not silently repair data.
 void Validate(const Document& document);
 
+// Strict JSON transport decoder. Required fields are never replaced with implicit defaults.
+Document ParseSnapshot(const std::string& json);
+
 }  // namespace photoshop

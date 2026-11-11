@@ -1,0 +1,4 @@
+dist/
+mac/
+win/
+*.ccx
