@@ -8,7 +8,8 @@
 - **选择 PSD 并导出**：由 Photoshop 打开磁盘 PSD，导出后自动关闭。若 Photoshop 返回已打开的文档，拒绝继续，提示改用当前文档入口，避免把未保存内容误当成磁盘内容。
 - 选择输出目录，生成自包含的 `.pagx`，PNG 图像嵌入文件。同名文件自动编号。
 - v0.1 宿主适配器导出 **Photoshop 合成画面**，保留透明度，统一转换成 8 位 sRGB。文字、效果和形状的外观保留，内容在 PAGX 中不可独立编辑。隐藏图层不参与当前画面。
-- 支持 8/16 位源文档；32 位 HDR 和 1 位位图明确拒绝。单画布上限 64M 像素，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
+- 支持普通画布、方形像素的 8/16 位源文档；画板、非方形像素、32 位 HDR 和 1 位位图明确拒绝。8 位画布上限 64M 像素，16 位上限 32M，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
+- 已实测 RGB 8/16 位；其他颜色模式和不同 ICC 配置仍需补充宿主样例，不能视为已全面验证。
 
 转换核心已经支持基础图层、组、经过验证的纯色矩形，以及按依赖回退到整幅合成。**DOM 的 normal 模式不足以证明 Blend If、挖空、通道混合等均为默认值**，所以初版宿主适配器将 `compositingKnown` 设为 false。后续只有经过宿主样例验证的适配器才能启用分层采集；不会把错误的独立图层叠加结果当成成功导出。
 
@@ -26,7 +27,7 @@ UXP 面板 main.js
 
 三个规范/转换层均不依赖 UXP。详细语义见 [PS → PAGX 映射规范](../../spec/photoshop_pagx_mapping.zh_CN.md) 和 [PSD 图层规范](../../spec/psd_layer_spec.zh_CN.md)。C++ 输入类型位于 `include/photoshop/Document.h`，JSON 解析器拒绝未知字段、未来版本、缺少字段和非法数据。
 
-桥接协议版本为 1：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、8 位 sRGB、straight alpha；不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
+桥接协议版本为 1：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
 
 原生调用是有大小上限的同步调用，取消在步骤之间生效；编码期间不能保证即时响应。宿主操作在 `executeAsModal` 中，临时文档立即注册 `registerAutoCloseDocument`，包括 Esc 取消都由 Photoshop 清理。没有写入任何源 PSD 的路径。
 
@@ -53,7 +54,49 @@ macOS 构建脚本仅做开发用 ad-hoc 签名。正式分发需 Developer ID �
 ## 分阶段验证
 
 - 第一阶段：C++ 模型和转换器，`PAGXPhotoshopTest.*` 最初 7 项通过，提交 `e6a1c7d8b`。
-- 第二阶段：正式 Adobe SDK 编译 addon；快照 JSON 校验；Node 业务测试覆盖资源释放、取消、并发、像素视图、同名文件和源文档生命周期。模拟宿主测试不等同于 Photoshop 实测。
-- 宿主阶段：用 UDT 加载真实面板，检查当前文档和磁盘 PSD 两个入口、透明像素、实际采集 bounds、导出后文档状态、生成 PAGX 的回读及渲染。实际结果另记于验证记录，不将未执行项目写成通过。
+- 第二阶段：正式 Adobe SDK 编译 addon；快照 JSON 校验；Node 业务测试覆盖资源释放、取消、并发、像素视图、同名文件和源文档生命周期，提交 `53d149a03`。模拟宿主测试不等同于 Photoshop 实测。
+- 第三阶段：在 Photoshop 27.4.0 中加载真实插件，修复异步 addon 加载、UXP 宿主版本读取、空图层组边界和 16 位像素采集。验证结果如下。
+
+### 本机验证记录（2026-11-11）
+
+环境：macOS 15.7.9、Apple Silicon、Photoshop 27.4.0、Adobe UXP Hybrid SDK 6.5.0。开发者模式已开启，UDT 加载状态为 Loaded。用户确认浮动面板可见；两个按钮通过 UDT 控制台触发实际 DOM click，文件/目录选择使用 Photoshop 原生对话框。
+
+| 验证 | 结果 |
+| --- | --- |
+| C++ `PAGXPhotoshopTest.*` | 8 项通过 |
+| Node 业务及加载回归 | 12 项通过 |
+| 当前已保存文档导出 | 64×48、透明边距、半透明红色、蓝色均正确 |
+| 当前未保存修改 | 50% 图层透明度导出后 alpha 为 64/128；原文档 ID、历史数、图层选择、dirty 状态不变 |
+| 选择另一份 PSD | 导出后自动关闭临时文档并恢复原活动文档 |
+| 选择已打开的 PSD | 显示明确错误，未关闭或保存原文档 |
+| 8/16 位、全透明、复杂图层 | 宿主脚本 4 个文件场景通过，16 位 PSD 由 Photoshop 生成 |
+| 取消、原生异常、失败后重试 | 3 个场景通过，无临时文档或输出残留 |
+| PAGX 回读和渲染 | 结构校验通过；8/16 位与未保存修改样本的可见像素及 alpha 与独立基准一致；复杂样本的渲染与采集图像一致 |
+
+复杂样本使用本机 Adobe Generator 测试资源 `all-layer-types.psd` 的副本，包含文字、形状、调整层、智能对象、蒙版、效果、空组和越界图层；该第三方资源不提交进仓库。未执行 Windows / Intel、HDR、画板、超大文件压力测试及其他颜色模式完整矩阵。取消测试在采集边界设置取消信号，未将人工 Esc 中断测为通过。
+
+宿主发现：本机 `getPixels(componentSize: 8)` 读取 16 位合成图会失败；读取 16 位后原生量化可正常导出。`executeAsModal` 重新包装异常后可能不保留 JS 原型或 `.message`，错误展示使用字符串兜底。
+
+### 复现宿主验证
+
+在仓库根目录创建独立测试目录（不要用生产 PSD）：
+
+```sh
+python3 tools/photoshop-exporter/test/make-fixtures.py .tmp/photoshop-validation
+```
+
+用 UDT 加载源码目录的插件，在其 Debug 控制台运行下式，并选择上述目录。脚本将生成 16 位 PSD 副本、PAGX 和 `host-report-*.json`，检查原有文档状态和失败清理；可选将复杂测试 PSD 复制到该目录并命名为 `all-layer-types.psd`。
+
+```js
+require("./test/host-smoke.js").run().catch(console.error)
+```
+
+安装 Pillow，并确保项目 `pagx` CLI 在 PATH 中，在有图形设备访问权限的环境运行：
+
+```sh
+python3 tools/photoshop-exporter/test/verify-exports.py .tmp/photoshop-validation --render
+```
+
+当前未保存修改另用 `alpha-fixture.psd` 手工测试：将图层不透明度改为 50%，点击“导出当前文档”，不保存原 PSD，再给像素验证脚本传 `--dirty-export <输出.pagx>`。完全透明像素的 RGB 不定义，比较时仅忽略 alpha 为 0 的 RGB，所有 alpha 值仍逐像素比较。测试脚本、SDK 和样本不进入运行包。
 
 官方依据：[Hybrid 构建](https://developer.adobe.com/uxp/guides/how-to/hybrid-plugins/build)、[Imaging](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/imaging)、[模态执行和自动关闭](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/executeasmodal)、[打包](https://developer.adobe.com/uxp/guides/how-to/distribution/package/)。

@@ -30,9 +30,17 @@ const candidates = [path.join(build, "tools/photoshop-exporter/native", filename
 const binary = candidates.find(file => fs.existsSync(file));
 if (!binary) throw new Error("CMake did not produce the addon");
 const destination = path.join(output, filename);
-fs.copyFileSync(binary, destination);
-if (process.platform === "darwin") {
-  // Development signature only. Marketplace distribution needs Developer ID + notarization.
-  execFileSync("codesign", ["--force", "--sign", "-", destination], { stdio: "inherit" });
+const staging = path.join(output, `${filename}.${process.pid}.tmp`);
+try {
+  fs.copyFileSync(binary, staging);
+  if (process.platform === "darwin") {
+    // Sign before replacement, so a loaded addon is never modified in place.
+    // Development signature only. Marketplace needs Developer ID + notarization.
+    execFileSync("codesign", ["--force", "--sign", "-", "--identifier",
+      "org.libpag.photoshop.exporter.addon", staging], { stdio: "inherit" });
+  }
+  fs.renameSync(staging, destination);
+} finally {
+  if (fs.existsSync(staging)) fs.unlinkSync(staging);
 }
 console.log(`Built development addon: ${destination}`);

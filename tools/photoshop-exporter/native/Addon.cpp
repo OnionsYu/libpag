@@ -133,11 +133,15 @@ addon_value AddRaster(addon_env env, addon_callback_info info) {
     const auto width = PixelInteger(metadata.at("width"));
     const auto height = PixelInteger(metadata.at("height"));
     const auto components = PixelInteger(metadata.at("components"));
-    if (metadata.at("componentSize") != 8 || metadata.at("colorProfile") != "sRGB IEC61966-2.1" ||
+    const auto componentSize = PixelInteger(metadata.at("componentSize"));
+    const auto bytesPerComponent = componentSize / 8;
+    if ((componentSize != 8 && componentSize != 16) ||
+        (componentSize == 16 && metadata.value("fullRange", false) != true) ||
+        metadata.at("colorProfile") != "sRGB IEC61966-2.1" ||
         metadata.at("alpha") != "straight" || (components != 3 && components != 4) || width < 0 ||
         height < 0 || (width == 0) != (height == 0) ||
-        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) > MaxPixels ||
-        length != static_cast<size_t>(width) * static_cast<size_t>(height) * components) {
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytesPerComponent > MaxPixels ||
+        length != static_cast<size_t>(width) * static_cast<size_t>(height) * components * bytesPerComponent) {
       throw std::invalid_argument("Invalid capture pixel contract or memory limit exceeded");
     }
     photoshop::RasterAsset asset;
@@ -149,12 +153,22 @@ addon_value AddRaster(addon_env env, addon_callback_info info) {
     }
     if (width > 0) {
       std::vector<uint8_t> rgba;
-      if (components == 3) {
+      if (components == 3 || componentSize == 16) {
         rgba.resize(static_cast<size_t>(width) * height * 4);
         auto input = static_cast<const uint8_t*>(bytes);
-        for (size_t i = 0, j = 0; i < length; i += 3, j += 4) {
-          std::memcpy(rgba.data() + j, input + i, 3);
+        const size_t stride = components * bytesPerComponent;
+        for (size_t i = 0, j = 0; i < length; i += stride, j += 4) {
           rgba[j + 3] = 255;
+          for (int channel = 0; channel < components; ++channel) {
+            if (componentSize == 16) {
+              // Uint16Array uses native byte order. fullRange=true means 0..65535, not 0..32768.
+              uint16_t value = 0;
+              std::memcpy(&value, input + i + channel * 2, sizeof(value));
+              rgba[j + channel] = static_cast<uint8_t>((static_cast<uint32_t>(value) + 128) / 257);
+            } else {
+              rgba[j + channel] = input[i + channel];
+            }
+          }
         }
         bytes = rgba.data();
       }

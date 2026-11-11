@@ -13,7 +13,10 @@ class NativeBridge {
     return JSON.parse(this.addon.begin(JSON.stringify(source), forceComposite));
   }
   addRaster(sessionId, metadata, bytes) {
-    if (!(bytes instanceof Uint8Array)) throw new Error("需要 8 位图像数据");
+    if (!(bytes instanceof Uint8Array || bytes instanceof Uint16Array) ||
+        metadata.componentSize !== bytes.BYTES_PER_ELEMENT * 8) {
+      throw new Error("图像数组类型与像素位深不匹配");
+    }
     const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
       ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     this.addon.addRaster(sessionId, JSON.stringify(metadata), buffer);

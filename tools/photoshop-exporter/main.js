@@ -1,7 +1,7 @@
 /* Copyright (C) 2026 Tencent. Licensed under the Apache License, Version 2.0. */
 "use strict";
 const ps = require("photoshop");
-const { storage } = require("uxp");
+const { storage, host } = require("uxp");
 const { NativeBridge } = require("./src/native-bridge.js");
 const { PhotoshopHost } = require("./src/photoshop-host.js");
 const { OutputFiles } = require("./src/output-files.js");
@@ -42,22 +42,25 @@ async function run(kind) {
     status.textContent = `已导出：${result.file.name}`;
     details.textContent = result.file.nativePath;
   } catch (error) {
-    status.textContent = error instanceof ExportCancelled || activeSignal.cancelled || error.number === 8007
-      ? "已取消导出" : `导出失败：${error.message}`;
+    status.textContent = error instanceof ExportCancelled || activeSignal.cancelled || (error && error.number === 8007)
+      ? "已取消导出" : `导出失败：${error && error.message || String(error)}`;
     console.error(error);
   } finally { activeSignal = undefined; busy(false); }
 }
 cancel.addEventListener("click", () => { if (activeSignal) activeSignal.cancelled = true; });
 current.addEventListener("click", () => run("current"));
 fileButton.addEventListener("click", () => run("file"));
-try {
-  const bridge = new NativeBridge(require("pagx-photoshop.uxpaddon"));
-  service = new ExportService({ bridge, host: new PhotoshopHost(ps, bridge.info.maxPixels),
-    files: new OutputFiles(storage.formats.utf8) });
-  status.textContent = "准备就绪";
-  busy(false);
-} catch (error) {
-  status.textContent = `导出模块加载失败：${error.message}`;
-  details.textContent = "请使用与系统架构匹配、包含原生模块的完整插件。";
-  console.error(error);
-}
+(async function initialize() {
+  try {
+    // Hybrid modules load asynchronously in Photoshop, unlike regular CommonJS modules.
+    const bridge = new NativeBridge(await require("pagx-photoshop.uxpaddon"));
+    service = new ExportService({ bridge, host: new PhotoshopHost(ps, bridge.info.maxPixels, host.version),
+      files: new OutputFiles(storage.formats.utf8) });
+    status.textContent = "准备就绪";
+    busy(false);
+  } catch (error) {
+    status.textContent = `导出模块加载失败：${error && error.message || String(error)}`;
+    details.textContent = "请使用与系统架构匹配、包含原生模块的完整插件。";
+    console.error(error);
+  }
+})();

@@ -76,8 +76,11 @@ test("bridge sends only the view bytes, not adjacent pixels in its backing buffe
   let captured;
   const bridge = new NativeBridge({ info: () => '{"protocolVersion":1,"schemaVersion":1}',
     addRaster: (id, metadata, bytes) => { captured = new Uint8Array(bytes); } });
-  bridge.addRaster("s", {}, new Uint8Array([99, 1, 2, 3, 4, 88]).subarray(1, 5));
+  bridge.addRaster("s", { componentSize: 8 }, new Uint8Array([99, 1, 2, 3, 4, 88]).subarray(1, 5));
   assert.deepEqual([...captured], [1, 2, 3, 4]);
+  bridge.addRaster("s", { componentSize: 16 }, new Uint16Array([99, 65535, 0, 32895, 88]).subarray(1, 4));
+  assert.deepEqual([...new Uint16Array(captured.buffer)], [65535, 0, 32895]);
+  assert.throws(() => bridge.addRaster("s", { componentSize: 8 }, new Uint16Array(4)), /位深不匹配/);
   assert.throws(() => new NativeBridge({ info: () => '{"protocolVersion":2}' }), /不匹配/);
 });
 
@@ -156,15 +159,67 @@ test("capture uses returned bounds and disposes imaging resources even when nati
   const host = new PhotoshopHost({ imaging: { async getPixels(options) {
     assert.equal(options.applyAlpha, false);
     assert.equal(options.layerID, undefined);
+    assert.equal(options.componentSize, 8);
+    assert.deepEqual(options.sourceBounds, { left: 0, top: 0, right: 10, bottom: 20 });
     return { level: 0, sourceBounds: { left: -3, top: 8, right: -1, bottom: 9 }, imageData: {
       width: 2, height: 1, colorSpace: "RGB", colorProfile: "sRGB IEC61966-2.1", componentSize: 8, components: 4,
       async getData() { return new Uint8Array(8); }, dispose() { disposed = true; }
     } };
   } } }, 100);
-  await assert.rejects(host.capture({ doc: { id: 1 } }, { bounds: {} }, { id: "composite" }, metadata => {
+  await assert.rejects(host.capture({ doc: { id: 1 } },
+    { bitDepth: 8, bounds: { left: 0, top: 0, width: 10, height: 20 } }, { id: "composite" }, metadata => {
     assert.equal(metadata.left, -3);
     assert.equal(metadata.top, 8);
     throw new Error("encoding failed");
   }), /encoding failed/);
   assert.equal(disposed, true);
+});
+
+test("snapshot preserves the UXP host version and handles nested empty Photoshop groups", async () => {
+  const constants = { BitsPerChannelType: { EIGHT: 8, SIXTEEN: 16 },
+    LayerKind: { GROUP: "group", NORMAL: "pixel" },
+    BlendMode: { NORMAL: "normal", PASSTHROUGH: "passThrough" }, DocumentMode: { RGB: "RGB" } };
+  const group = { id: 2, name: "empty", kind: "group", visible: true, opacity: 100,
+    fillOpacity: 100, blendMode: "passThrough", bounds: {}, layers: [] };
+  const pixel = { ...group, id: 3, name: "pixels", kind: "pixel",
+    bounds: { left: 7, top: 9, right: 37, bottom: 31 } };
+  const doc = { bitsPerChannel: 8, pixelAspectRatio: 1, artboards: [], width: 64, height: 48,
+    resolution: 72, mode: "RGB", colorProfileName: "sRGB IEC61966-2.1",
+    layers: [pixel, { ...group, id: 1, layers: [group] }] };
+  const host = new PhotoshopHost({ constants }, 10000, "27.4.0");
+  const snapshot = await host.snapshot({ doc, sourceName: "input.psd" });
+  assert.equal(snapshot.hostVersion, "27.4.0");
+  assert.deepEqual(snapshot.layers.map(layer => layer.id), ["ps:1", "ps:3"]);
+  assert.deepEqual(snapshot.layers[0].bounds, { left: 0, top: 0, width: 0, height: 0 });
+  assert.deepEqual(snapshot.layers[0].children[0].bounds, snapshot.layers[0].bounds);
+  assert.deepEqual(snapshot.layers[1].bounds, { left: 7, top: 9, width: 30, height: 22 });
+  pixel.bounds = {};
+  await assert.rejects(host.snapshot({ doc }), /无效的图层边界/);
+  doc.artboards = [1];
+  await assert.rejects(host.snapshot({ doc }), /画板文档/);
+  doc.pixelAspectRatio = 2;
+  await assert.rejects(host.snapshot({ doc }), /方形像素/);
+});
+
+test("panel waits for the real asynchronous Hybrid loader before enabling export", async () => {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  const elements = Object.fromEntries(["status", "details", "current", "file", "cancel"].map(id =>
+    [id, { disabled: true, addEventListener() {} }]));
+  let resolveAddon;
+  const addon = new Promise(resolve => { resolveAddon = resolve; });
+  const errors = [];
+  const imports = { photoshop: {}, uxp: { storage: { formats: { utf8: "utf8" } }, host: { version: "27.4.0" } },
+    "pagx-photoshop.uxpaddon": addon };
+  vm.runInNewContext(fs.readFileSync(require.resolve("../main.js"), "utf8"), {
+    document: { getElementById: id => elements[id] }, console: { error: error => errors.push(error) },
+    require: name => name in imports ? imports[name] : require(`../${name}`)
+  });
+  assert.equal(elements.current.disabled, true);
+  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 1, schemaVersion: 1, maxPixels: 100 }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(errors, []);
+  assert.equal(elements.current.disabled, false);
+  assert.equal(elements.file.disabled, false);
+  assert.equal(elements.status.textContent, "准备就绪");
 });

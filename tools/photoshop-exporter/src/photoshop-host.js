@@ -4,10 +4,14 @@ const { checkCancelled } = require("./export-service.js");
 const SRGB = "sRGB IEC61966-2.1";
 
 function list(collection) { return Array.from(collection); }
-function rect(bounds) {
-  return { left: Number(bounds.left), top: Number(bounds.top),
+function rect(bounds, emptyGroup) {
+  const result = { left: Number(bounds.left), top: Number(bounds.top),
     width: Number(bounds.right) - Number(bounds.left),
     height: Number(bounds.bottom) - Number(bounds.top) };
+  if (Object.values(result).every(Number.isFinite)) return result;
+  // Photoshop returns an empty object for the bounds of empty groups (including nested ones).
+  if (emptyGroup) return { left: 0, top: 0, width: 0, height: 0 };
+  throw new Error("Photoshop 返回了无效的图层边界");
 }
 function layerKind(layer, constants) {
   const k = constants.LayerKind;
@@ -20,7 +24,11 @@ function layerKind(layer, constants) {
 }
 
 class PhotoshopHost {
-  constructor(photoshop, maxPixels) { this.ps = photoshop; this.maxPixels = maxPixels; }
+  constructor(photoshop, maxPixels, hostVersion) {
+    this.ps = photoshop;
+    this.maxPixels = maxPixels;
+    this.hostVersion = hostVersion;
+  }
 
   async withDocument(input, signal, task) {
     const { app, core } = this.ps;
@@ -67,15 +75,17 @@ class PhotoshopHost {
   }
 
   async snapshot({ doc, sourceName }) {
-    const { constants, app } = this.ps;
+    const { constants } = this.ps;
     const depths = constants.BitsPerChannelType;
     const bitDepth = doc.bitsPerChannel === depths.EIGHT ? 8 :
       doc.bitsPerChannel === depths.SIXTEEN ? 16 : 0;
     if (!bitDepth) throw new Error("初版支持 8/16 位文档。请先在副本中将 HDR/位图转换为 8 或 16 位。");
+    if (doc.pixelAspectRatio !== 1) throw new Error("初版仅支持方形像素，请在副本中转换像素长宽比后导出。");
+    if (doc.artboards.length) throw new Error("初版尚不支持画板文档，请在副本中将画板转换为普通画布后导出。");
     const width = Number(doc.width), height = Number(doc.height);
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
-        width <= 0 || height <= 0 || width * height > this.maxPixels) {
-      throw new Error("画布尺寸无效或超过初版 64M 像素限制");
+        width <= 0 || height <= 0 || width * height * (bitDepth / 8) > this.maxPixels) {
+      throw new Error("画布尺寸无效或超过内存限制（8 位 64M / 16 位 32M 像素）");
     }
     let count = 0;
     const walk = (layers, depth) => {
@@ -88,6 +98,9 @@ class PhotoshopHost {
         const id = `ps:${layer.id}`;
         const clippingBase = layer.isClippingMask ? base : "";
         if (!layer.isClippingMask) base = id;
+        const children = kind === "group" ? walk(layer.layers, depth + 1) : [];
+        const emptyGroup = kind === "group" && children.every(child =>
+          child.bounds.width === 0 || child.bounds.height === 0);
         return { id, sourceLayerId: layer.id, name: layer.name, kind,
           visible: layer.visible, opacity: layer.opacity / 100,
           fillOpacity: layer.fillOpacity / 100,
@@ -95,15 +108,15 @@ class PhotoshopHost {
             layer.blendMode === constants.BlendMode.PASSTHROUGH ? "passThrough" : String(layer.blendMode),
           // A DOM blend mode alone does not prove Blend If / knockout / channel blending are default.
           // Until the descriptor contract is qualified, preserve these semantics via the composite.
-          compositingKnown: false, clippingBase, features: [], bounds: rect(layer.bounds), text: "",
-          children: kind === "group" ? walk(layer.layers, depth + 1) : [] };
+          compositingKnown: false, clippingBase, features: [], bounds: rect(layer.bounds, emptyGroup),
+          text: "", children };
       });
     };
-    return { schemaVersion: 1, name: sourceName, hostVersion: app.version,
+    return { schemaVersion: 1, name: sourceName, hostVersion: this.hostVersion,
       resolution: doc.resolution, colorMode: doc.mode === constants.DocumentMode.RGB ? "RGB" : String(doc.mode),
       colorProfile: doc.colorProfileName, bitDepth,
       bounds: { left: 0, top: 0, width, height },
-      features: doc.artboards.length ? ["artboards-document-canvas"] : [], layers: walk(doc.layers, 0) };
+      features: [], layers: walk(doc.layers, 0) };
   }
 
   async prepareCaptures(document, source, plan) {
@@ -116,26 +129,32 @@ class PhotoshopHost {
 
   async capture({ doc }, source, request, consume) {
     if (request.layerId) throw new Error("不支持的采集请求");
+    const bounds = source.bounds;
     const result = await this.ps.imaging.getPixels({ documentID: doc.id,
-      sourceBounds: source.bounds, colorSpace: "RGB", colorProfile: SRGB,
-      componentSize: 8, applyAlpha: false });
+      sourceBounds: { left: bounds.left, top: bounds.top,
+        right: bounds.left + bounds.width, bottom: bounds.top + bounds.height },
+      colorSpace: "RGB", colorProfile: SRGB,
+      // PS 27.4 fails when requesting 8-bit pixels from a 16-bit composite. Read the source
+      // precision, perform the color conversion here, and quantize once in the native bridge.
+      componentSize: source.bitDepth, applyAlpha: false });
     const data = result.imageData;
     if (!data) throw new Error("Photoshop 没有返回图像数据");
     try {
       if (result.level !== 0 || data.colorSpace !== "RGB" || data.colorProfile !== SRGB ||
-          data.componentSize !== 8 || ![3, 4].includes(data.components)) {
+          data.componentSize !== source.bitDepth || ![8, 16].includes(data.componentSize) ||
+          ![3, 4].includes(data.components)) {
         throw new Error("Photoshop 返回了不支持的颜色或缩放格式");
       }
       const actual = result.sourceBounds;
       const width = data.width, height = data.height;
-      if (width * height > this.maxPixels) throw new Error("图像超过像素限制");
+      if (width * height * (data.componentSize / 8) > this.maxPixels) throw new Error("图像超过内存限制");
       if (width && (actual.right - actual.left !== width || actual.bottom - actual.top !== height)) {
         throw new Error("Photoshop 图像尺寸与实际采集区域不一致");
       }
-      const pixels = await data.getData({ chunky: true });
+      const pixels = await data.getData({ chunky: true, fullRange: true });
       consume({ requestId: request.id, left: actual.left, top: actual.top,
         width, height, components: data.components, componentSize: data.componentSize,
-        colorProfile: data.colorProfile, alpha: "straight" }, pixels);
+        colorProfile: data.colorProfile, alpha: "straight", fullRange: true }, pixels);
     } finally { data.dispose(); }
   }
 }
