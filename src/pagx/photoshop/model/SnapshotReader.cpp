@@ -6,6 +6,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,10 +30,16 @@ int Integer(const JSON& value) {
   }
   return value.get<int>();
 }
+float Number(const JSON& value) {
+  if (!value.is_number()) throw std::invalid_argument("Expected a snapshot number");
+  auto number = value.get<float>();
+  if (!std::isfinite(number)) throw std::invalid_argument("Non-finite snapshot number");
+  return number;
+}
 Rect Bounds(const JSON& value) {
   Keys(value, {"left", "top", "width", "height"});
-  return {value.at("left").get<float>(), value.at("top").get<float>(),
-          value.at("width").get<float>(), value.at("height").get<float>()};
+  return {Number(value.at("left")), Number(value.at("top")),
+          Number(value.at("width")), Number(value.at("height"))};
 }
 LayerKind Kind(const std::string& value) {
   static const std::unordered_map<std::string, LayerKind> kinds = {
@@ -62,8 +69,8 @@ std::vector<Layer> Layers(const JSON& value) {
     layer.name = item.at("name").get<std::string>();
     layer.kind = Kind(item.at("kind").get<std::string>());
     layer.visible = item.at("visible").get<bool>();
-    layer.opacity = item.at("opacity").get<float>();
-    layer.fillOpacity = item.at("fillOpacity").get<float>();
+    layer.opacity = Number(item.at("opacity"));
+    layer.fillOpacity = Number(item.at("fillOpacity"));
     layer.blendMode = item.at("blendMode").get<std::string>();
     layer.compositingKnown = item.at("compositingKnown").get<bool>();
     layer.clippingBase = item.at("clippingBase").get<std::string>();
@@ -75,11 +82,11 @@ std::vector<Layer> Layers(const JSON& value) {
       Keys(v, {"bounds", "red", "green", "blue", "alpha", "roundness"});
       SolidRectangle rect;
       rect.bounds = Bounds(v.at("bounds"));
-      rect.red = v.at("red").get<float>();
-      rect.green = v.at("green").get<float>();
-      rect.blue = v.at("blue").get<float>();
-      rect.alpha = v.at("alpha").get<float>();
-      rect.roundness = v.at("roundness").get<float>();
+      rect.red = Number(v.at("red"));
+      rect.green = Number(v.at("green"));
+      rect.blue = Number(v.at("blue"));
+      rect.alpha = Number(v.at("alpha"));
+      rect.roundness = Number(v.at("roundness"));
       layer.rectangle = rect;
     }
     layer.children = Layers(item.at("children"));
@@ -102,7 +109,7 @@ Document ParseSnapshot(const std::string& text) {
     doc.schemaVersion = Integer(root.at("schemaVersion"));
     doc.name = root.at("name").get<std::string>();
     doc.hostVersion = root.at("hostVersion").get<std::string>();
-    doc.resolution = root.at("resolution").get<float>();
+    doc.resolution = Number(root.at("resolution"));
     doc.colorMode = root.at("colorMode").get<std::string>();
     doc.colorProfile = root.at("colorProfile").get<std::string>();
     doc.bitDepth = Integer(root.at("bitDepth"));

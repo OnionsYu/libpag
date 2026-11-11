@@ -122,7 +122,8 @@ function hostFixture() {
   const copy = { id: 2, name: "temp" };
   const ps = { app: { documents: [original], activeDocument: original, async open() {
     ps.app.documents.push(copy); ps.app.activeDocument = copy; return copy;
-  } }, core: { async executeAsModal(fn) {
+  } }, core: { async executeAsModal(fn, options) {
+    assert.equal(options.timeOut, 1, "modal acquisition timeout is expressed in seconds");
     const closing = [];
     try { return await fn({ hostControl: { async registerAutoCloseDocument(id) { closing.push(id); } } }); }
     finally { ps.app.documents = ps.app.documents.filter(doc => !closing.includes(doc.id)); }

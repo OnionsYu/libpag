@@ -217,6 +217,12 @@ PAGX_TEST(PAGXPhotoshopTest, ParsesVersionedSnapshotAndRejectsAmbiguousInput) {
   auto huge = json;
   huge.replace(huge.find("\"bitDepth\":8"), 12, "\"bitDepth\":18446744073709551615");
   EXPECT_THROW(photoshop::ParseSnapshot(huge), std::invalid_argument);
+  for (const auto& replacement : {"true", "false", "null", "\"72\"", "1e100"}) {
+    auto invalidNumber = json;
+    invalidNumber.replace(invalidNumber.find("\"resolution\":72"), 15,
+                          std::string("\"resolution\":") + replacement);
+    EXPECT_THROW(photoshop::ParseSnapshot(invalidNumber), std::invalid_argument);
+  }
   EXPECT_THROW(photoshop::ParseSnapshot("{}"), std::invalid_argument);
 }
 }  // namespace pag

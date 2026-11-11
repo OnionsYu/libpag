@@ -60,7 +60,7 @@ class PhotoshopHost {
         await context.hostControl.registerAutoCloseDocument(ownedId);
         checkCancelled(signal, context);
         return await task({ doc: working, sourceName }, context);
-      }, { commandName: "导出 PAGX", timeOut: 1000 });
+      }, { commandName: "导出 PAGX", timeOut: 1 });
     } finally {
       // Auto-close runs at modal exit. Never close a document that we did not create.
       if (ownedId && list(app.documents).some(doc => doc.id === ownedId)) {
@@ -69,7 +69,7 @@ class PhotoshopHost {
       const original = list(app.documents).find(doc => doc.id === originalId);
       if (original && app.activeDocument.id !== originalId) {
         await core.executeAsModal(async () => { app.activeDocument = original; },
-          { commandName: "恢复原文档", timeOut: 1000 });
+          { commandName: "恢复原文档", timeOut: 1 });
       }
     }
   }
