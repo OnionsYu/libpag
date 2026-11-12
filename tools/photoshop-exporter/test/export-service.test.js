@@ -77,7 +77,7 @@ test("simultaneous exports are rejected", async () => {
 
 test("bridge sends only the view bytes, not adjacent pixels in its backing buffer", () => {
   let captured;
-  const bridge = new NativeBridge({ info: () => '{"protocolVersion":2,"schemaVersion":3}',
+  const bridge = new NativeBridge({ info: () => '{"protocolVersion":2,"schemaVersion":4}',
     addRaster: (id, metadata, bytes) => { captured = new Uint8Array(bytes); } });
   bridge.addRaster("s", { componentSize: 8 }, new Uint8Array([99, 1, 2, 3, 4, 88]).subarray(1, 5));
   assert.deepEqual([...captured], [1, 2, 3, 4]);
@@ -215,7 +215,13 @@ test("range captures restore descendants, hide unrelated paint and bake opacity 
   const outside = { id: 5, visible: true, opacity: 30, kind: "pixel" };
   const doc = { id: 1, layers: [outside, group] };
   let reading;
-  const ps = { constants: { LayerKind: { GROUP: "group" } }, imaging: { async getPixels() {
+  const ps = { constants: { LayerKind: { GROUP: "group" } }, action: { async batchPlay(requests) {
+    for (const request of requests) {
+      assert.equal(request._target[0]._id, group.id);
+      group.maskEnabled = request.to.vectorMaskEnabled;
+    }
+    return requests.map(() => ({}));
+  } }, imaging: { async getPixels() {
     reading();
     return { level: 0, sourceBounds: { left: 0, top: 0, right: 1, bottom: 1 }, imageData: {
       colorSpace: "RGB", colorProfile: "sRGB IEC61966-2.1", componentSize: 8, components: 4,
@@ -223,12 +229,14 @@ test("range captures restore descendants, hide unrelated paint and bake opacity 
     } };
   } } };
   const host = new PhotoshopHost(ps, 100);
-  const document = { doc }, source = { bitDepth: 8, bounds: { left: 0, top: 0, width: 10, height: 10 } };
+  const document = { doc }, source = { bitDepth: 8, bounds: { left: 0, top: 0, width: 10, height: 10 },
+    layers: [{ id: "ps:1", vectorMask: { enabled: true }, children: [] }] };
   const range = { id: "range", layerId: "ps:2", layerIds: ["ps:2", "ps:3"], parentId: "ps:1" };
   const captureGroup = { id: "group", layerId: "ps:1", layerIds: ["ps:1"], parentId: "" };
   await host.prepareCaptures(document, source, { rasters: [range, captureGroup] });
   reading = () => {
     assert.equal(group.opacity, 100);
+    assert.equal(group.maskEnabled, false, "ancestor mask must not be baked into child pixels");
     assert.equal(bottom.opacity, 60); assert.equal(clipped.opacity, 70);
     assert.equal(bottom.visible, true); assert.equal(clipped.visible, true);
     assert.equal(outside.visible, false); assert.equal(hidden.visible, false);
@@ -236,6 +244,7 @@ test("range captures restore descendants, hide unrelated paint and bake opacity 
   await host.capture(document, source, range, () => {});
   reading = () => {
     assert.equal(group.opacity, 50, "captured group alpha is baked, not neutralized");
+    assert.equal(group.maskEnabled, true, "captured root mask is restored before the next request");
     assert.equal(bottom.visible, true); assert.equal(clipped.visible, true);
     assert.equal(outside.visible, false); assert.equal(hidden.visible, false);
   };
@@ -267,7 +276,7 @@ test("panel waits for the real asynchronous Hybrid loader before enabling export
     require: name => name in imports ? imports[name] : require(`../${name}`)
   });
   assert.equal(elements.current.disabled, true);
-  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 2, schemaVersion: 3, maxPixels: 100 }) });
+  resolveAddon({ info: () => JSON.stringify({ protocolVersion: 2, schemaVersion: 4, maxPixels: 100 }) });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(errors, []);
   assert.equal(elements.current.disabled, false);

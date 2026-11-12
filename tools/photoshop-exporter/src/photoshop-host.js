@@ -126,7 +126,7 @@ class PhotoshopHost {
       }
       return result;
     };
-    return { schemaVersion: 3, name: sourceName, hostVersion: this.hostVersion,
+    return { schemaVersion: 4, name: sourceName, hostVersion: this.hostVersion,
       resolution: doc.resolution, colorMode: doc.mode === constants.DocumentMode.RGB ? "RGB" : String(doc.mode),
       colorProfile: doc.colorProfileName, bitDepth,
       bounds: { left: 0, top: 0, width, height },
@@ -136,9 +136,16 @@ class PhotoshopHost {
   async prepareCaptures(document, source, plan) {
     if (plan.composite || !plan.rasters.length) return;
     const layers = new Map();
+    const masks = new Map();
+    const readMasks = items => { for (const item of items) {
+      if (item.vectorMask) masks.set(item.id, item.vectorMask.enabled);
+      readMasks(item.children || []);
+    } };
+    readMasks(source.layers || []);
     const walk = (items, ancestors) => {
       for (const layer of list(items)) {
-        layers.set(`ps:${layer.id}`, { layer, ancestors, visible: layer.visible, opacity: layer.opacity });
+        layers.set(`ps:${layer.id}`, { layer, ancestors, visible: layer.visible, opacity: layer.opacity,
+          vectorMaskEnabled: masks.get(`ps:${layer.id}`) });
         if (layer.kind === this.ps.constants.LayerKind.GROUP) walk(layer.layers, [...ancestors, layer]);
       }
     };
@@ -170,6 +177,19 @@ class PhotoshopHost {
           item.ancestors.some(ancestor => roots.has(`ps:${ancestor.id}`)));
       }
       for (const ancestor of target.ancestors) { ancestor.visible = true; ancestor.opacity = 100; }
+      // Ancestor masks remain vector nodes in PAGX. Neutralize them during subtree capture,
+      // then restore source state for the next request (which may capture that group itself).
+      const ancestors = new Set(target.ancestors.map(layer => layer.id));
+      const maskChanges = [...state.values()].filter(item => item.vectorMaskEnabled !== undefined)
+        .map(item => ({ _obj: "set", _target: [{ _ref: "layer", _id: item.layer.id },
+          { _ref: "document", _id: doc.id }], to: { _obj: "layer",
+          vectorMaskEnabled: ancestors.has(item.layer.id) ? false : item.vectorMaskEnabled },
+          _options: { dialogOptions: "silent" } }));
+      if (maskChanges.length) {
+        const results = await this.ps.action.batchPlay(maskChanges, {});
+        if (results.length !== maskChanges.length || results.some(value => !value || value._obj === "error"))
+          throw new Error("无法中和祖先矢量蒙版，已停止导出");
+      }
     }
     const bounds = source.bounds;
     const result = await this.ps.imaging.getPixels({ documentID: doc.id,

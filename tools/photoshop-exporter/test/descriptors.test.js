@@ -2,9 +2,46 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { DescriptorReader, shape, pathComponents } = require("../src/descriptor-reader.js");
+const { DescriptorReader, shape, pathComponents, vectorMask } = require("../src/descriptor-reader.js");
 const fixture = require("./fixtures/ps27-descriptors.json");
 const appearance = require("./fixtures/ps27-appearance.json");
+const masks = require("./fixtures/ps27-masks.json");
+
+test("independent masks retain state and geometry without becoming shape paint", async () => {
+  for (const [name, raw] of Object.entries(masks)) {
+    const flags = raw.metadata;
+    const mask = vectorMask(raw.value, raw.path, flags);
+    assert.equal(mask.enabled, name !== "vector-mask-disabled");
+    assert.equal(mask.feather, name === "vector-mask-feather" ? 3 : 0);
+    assert.equal(mask.linked, true);
+    assert.equal(mask.inverted, name === "vector-mask-inverted");
+    assert.equal(mask.density, 1);
+    assert.equal(mask.components[1].operation, "subtract");
+    const ps = { action: { async batchPlay([request]) {
+      if (request._target[0]._property === "json") return [{ json: JSON.stringify({
+        version: "1.6.1", id: 7, layers: [{ id: raw.id }] }) }];
+      return [request._target[0]._ref === "path" ? raw.path : raw.value];
+    } } };
+    const reader = new DescriptorReader(ps, { id: 7 }, "27.4.0", async () => new Map([[raw.id, flags]]));
+    await reader.init();
+    const source = { kind: "group", features: [], rasterFeatures: [], children: [] };
+    await reader.read({ id: raw.id }, source);
+    assert.deepEqual(source.vectorMask, mask);
+    assert.deepEqual(source.rasterFeatures, []);
+    assert.equal(source.shape, undefined);
+    const unknown = new DescriptorReader(ps, { id: 7 }, "27.4.0", async () => { throw new Error("metadata unavailable"); });
+    await unknown.init();
+    const fallback = { kind: "group", features: [], rasterFeatures: [] };
+    await unknown.read({ id: raw.id }, fallback);
+    assert.equal(fallback.vectorMask, undefined);
+    assert.match(fallback.rasterFeatures[0], /^vector-mask:/);
+  }
+  assert.throws(() => vectorMask(masks["vector-mask"].value, masks["vector-mask"].path));
+  for (const patch of [{ vectorMaskEnabled: 1 }, { vectorMaskDensity: -1 },
+    { vectorMaskFeather: -1 }, { useAlignedRendering: true }]) {
+    assert.throws(() => vectorMask({ ...masks["vector-mask"].value, ...patch }, masks["vector-mask"].path));
+  }
+});
 
 test("recorded dash units and independent stroke opacity become pixel-space v3 paints", () => {
   const dash = shape(appearance.dash.value, appearance.dash.path);

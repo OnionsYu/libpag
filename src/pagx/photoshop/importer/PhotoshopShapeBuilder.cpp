@@ -39,6 +39,31 @@ tgfx::Path MakeComponent(const photoshop::PathComponent& component) {
   }
   return path;
 }
+tgfx::Path MakeGeometry(const std::vector<photoshop::PathComponent>& components) {
+  auto combined = MakeComponent(components.front());
+  for (size_t i = 1; i < components.size(); ++i) {
+    const auto& component = components[i];
+    tgfx::PathOp operation;
+    switch (component.operation) {
+      case photoshop::PathOperation::Add:
+        operation = tgfx::PathOp::Union;
+        break;
+      case photoshop::PathOperation::Subtract:
+        operation = tgfx::PathOp::Difference;
+        break;
+      case photoshop::PathOperation::Intersect:
+        operation = tgfx::PathOp::Intersect;
+        break;
+      case photoshop::PathOperation::Exclude:
+        operation = tgfx::PathOp::XOR;
+        break;
+      default:
+        throw std::invalid_argument("Invalid path operation");
+    }
+    combined.addPath(MakeComponent(component), operation);
+  }
+  return combined;
+}
 Path* MakePath(PAGXDocument* document, const tgfx::Path& geometry) {
   auto data = document->makeNode<PathData>();
   for (const auto& segment : geometry) {
@@ -112,30 +137,44 @@ bool CanBuildShape(const photoshop::Shape& shape) {
   return true;
 }
 
+bool CanBuildVectorMask(const std::optional<photoshop::VectorMask>& mask) {
+  if (!mask || !mask->enabled) return true;
+  if (mask->density != 1 || mask->feather != 0 || mask->initialFill) return false;
+  for (const auto& component : mask->components) {
+    for (const auto& path : component.subpaths)
+      if (!path.closed) return false;
+  }
+  photoshop::Shape shape;
+  shape.components = mask->components;
+  return CanBuildShape(shape);
+}
+
+void BuildPhotoshopVectorMask(PAGXDocument* document, Layer* layer,
+                              const photoshop::VectorMask& value, const photoshop::Rect& canvas) {
+  if (!value.enabled) return;
+  auto mask = document->makeNode<Layer>(layer->id + "_vector_mask");
+  mask->visible = false;
+  // Every source path is in document space. The owner can be a canvas-origin group or a
+  // translated shape/rectangle; account for that translation exactly once.
+  mask->x = -canvas.left - layer->x;
+  mask->y = -canvas.top - layer->y;
+  auto geometry = MakeGeometry(value.components);
+  if (value.inverted) {
+    tgfx::Path complement;
+    complement.addRect(tgfx::Rect::MakeXYWH(canvas.left, canvas.top, canvas.width, canvas.height));
+    complement.addPath(geometry, tgfx::PathOp::Difference);
+    geometry = complement;
+  }
+  mask->contents = {MakePath(document, geometry),
+                    MakeFill(document, geometry, photoshop::Color{1, 1, 1, 1}, 1)};
+  layer->mask = mask;
+  layer->maskType = MaskType::Contour;
+  layer->children.push_back(mask);
+}
+
 void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::Shape& shape,
                          float fillOpacity) {
-  auto combined = MakeComponent(shape.components.front());
-  for (size_t i = 1; i < shape.components.size(); ++i) {
-    const auto& component = shape.components[i];
-    tgfx::PathOp operation;
-    switch (component.operation) {
-      case photoshop::PathOperation::Add:
-        operation = tgfx::PathOp::Union;
-        break;
-      case photoshop::PathOperation::Subtract:
-        operation = tgfx::PathOp::Difference;
-        break;
-      case photoshop::PathOperation::Intersect:
-        operation = tgfx::PathOp::Intersect;
-        break;
-      case photoshop::PathOperation::Exclude:
-        operation = tgfx::PathOp::XOR;
-        break;
-      default:
-        throw std::invalid_argument("Invalid path operation");
-    }
-    combined.addPath(MakeComponent(component), operation);
-  }
+  auto combined = MakeGeometry(shape.components);
   auto path = MakePath(document, combined);
   layer->contents.push_back(path);
   if (shape.fill) {

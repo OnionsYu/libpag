@@ -101,6 +101,19 @@ PAGX_TEST(PAGXPhotoshopTest, VersionedPaintRetainsSourceSemanticsAndFillsTheExpo
   json["schemaVersion"] = 3;
   json["layers"][0]["fill"]["kind"] = "future";
   EXPECT_THROW(photoshop::ParseSnapshot(json.dump()), std::invalid_argument);
+  json = nlohmann::json::parse(text);
+  json["layers"][0]["vectorMask"] = {{"enabled", false},
+                                     {"linked", true},
+                                     {"inverted", false},
+                                     {"initialFill", false},
+                                     {"density", 1},
+                                     {"feather", 0},
+                                     {"components", nlohmann::json::array()}};
+  EXPECT_THROW(photoshop::ParseSnapshot(json.dump()), std::invalid_argument);
+  json["schemaVersion"] = 4;
+  EXPECT_FALSE(photoshop::ParseSnapshot(json.dump()).layers[0].vectorMask->enabled);
+  json["layers"][0]["vectorMask"]["density"] = -1;
+  EXPECT_THROW(photoshop::ParseSnapshot(json.dump()), std::invalid_argument);
   photoshop::Gradient gradient;
   gradient.interpolation = "perceptual";
   gradient.colors = {{0, 0.5f, {1, 0, 0, 1}}, {1, 0.5f, {0, 0, 1, 1}}};
@@ -181,6 +194,86 @@ PAGX_TEST(PAGXPhotoshopTest, CompoundStrokeAlignmentSurvivesSerializationAtMulti
       }
     }
   }
+}
+
+PAGX_TEST(PAGXPhotoshopTest, IndependentVectorMasksPreserveHolesCoordinatesAndSingleOpacity) {
+  DeviceLockScope deviceLock;
+  ASSERT_TRUE(static_cast<bool>(deviceLock));
+  for (int variant = 0; variant < 4; ++variant) {
+    const bool groupOwner = variant & 1;
+    const bool inverted = variant & 2;
+    auto source = PSDocument();
+    source.bounds = {-10, -20, 100, 100};
+    auto shape = NativeShape("shape");
+    shape.shape->components = {PSBox(-10, -20, 90, 80)};
+    shape.opacity = 0.5f;
+    auto owner = groupOwner ? Pixel("group") : shape;
+    if (groupOwner) {
+      owner.kind = photoshop::LayerKind::Group;
+      owner.opacity = 0.5f;
+      owner.children = {shape};
+    } else
+      owner.fillOpacity = 0.5f;
+    photoshop::VectorMask mask;
+    mask.inverted = inverted;
+    auto hole = PSBox(20, 20, 40, 40);
+    hole.operation = photoshop::PathOperation::Subtract;
+    mask.components = {PSBox(0, 0, 80, 60), hole};
+    owner.vectorMask = mask;
+    source.layers = {owner};
+    EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).rasters.empty());
+    auto converted = pagx::PhotoshopImporter::Convert(source, {});
+    EXPECT_NE(converted->layers[0]->mask, nullptr);
+    auto xml = pagx::PAGXExporter::ToXML(*converted);
+    EXPECT_EQ(xml.find("<Image"), std::string::npos);
+    auto parsed = pagx::PAGXImporter::FromXML(xml);
+    ASSERT_NE(parsed, nullptr);
+    ASSERT_TRUE(parsed->errors.empty());
+    parsed->applyLayout();
+    for (int scale : {1, 4}) {
+      auto root = pagx::LayerBuilder::Build(parsed.get());
+      root->setMatrix(tgfx::Matrix::MakeScale(scale));
+      auto surface = tgfx::Surface::Make(deviceLock.context(), 100 * scale, 100 * scale);
+      ASSERT_NE(surface, nullptr);
+      tgfx::DisplayList display;
+      display.root()->addChild(root);
+      display.render(surface.get(), false);
+      std::vector<uint8_t> pixels(100 * 100 * scale * scale * 4);
+      ASSERT_TRUE(surface->readPixels(
+          tgfx::ImageInfo::Make(100 * scale, 100 * scale, tgfx::ColorType::RGBA_8888,
+                                tgfx::AlphaType::Unpremultiplied),
+          pixels.data()));
+      for (auto point : {photoshop::Point{15, 25}, {35, 45}, {3, 5}, {65, 65}, {95, 95}}) {
+        const auto offset =
+            (static_cast<int>(point.y) * scale * 100 * scale + static_cast<int>(point.x) * scale) *
+            4;
+        const bool painted = (point.x == 15 || point.x == 65) != inverted;
+        EXPECT_NEAR(pixels[offset + 3], painted ? 64 : 0, 1)
+            << "group=" << groupOwner << " scale=" << scale;
+      }
+    }
+    source.layers[0].vectorMask->feather = 3;
+    auto plan = pagx::PhotoshopImporter::Analyze(source);
+    ASSERT_EQ(plan.rasters.size(), 1u);
+    EXPECT_EQ(plan.rasters[0].layerId, owner.id);
+    source.layers[0].vectorMask->enabled = false;
+    EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).rasters.empty());
+    converted = pagx::PhotoshopImporter::Convert(source, {});
+    EXPECT_EQ(converted->layers[0]->mask, nullptr);
+    source.schemaVersion = 3;
+    EXPECT_THROW(photoshop::Validate(source), std::invalid_argument);
+  }
+  auto source = PSDocument();
+  auto group = Pixel("pass");
+  group.kind = photoshop::LayerKind::Group;
+  group.blendMode = "passThrough";
+  group.children = {NativeShape("inside")};
+  group.vectorMask = photoshop::VectorMask{};
+  group.vectorMask->components = {PSBox(0, 0, 100, 100)};
+  source.layers = {NativeShape("backdrop"), group, NativeShape("above")};
+  auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"backdrop", "pass"}));
 }
 
 PAGX_TEST(PAGXPhotoshopTest, UnqualifiedDocumentCompositionBakesNormalVectorsOnce) {
@@ -516,7 +609,7 @@ PAGX_TEST(PAGXPhotoshopTest, RejectsMalformedSourceAndCaptureContracts) {
   asset = Capture("layer:one");
   asset.png.resize(7);
   EXPECT_THROW(pagx::PhotoshopImporter::Convert(source, {asset}), std::invalid_argument);
-  source.schemaVersion = 4;
+  source.schemaVersion = 5;
   EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
 }
 
@@ -555,7 +648,7 @@ PAGX_TEST(PAGXPhotoshopTest, ParsesVersionedSnapshotAndRejectsAmbiguousInput) {
   EXPECT_FLOAT_EQ(source.bounds.width, 200);
   EXPECT_TRUE(source.layers.empty());
   auto future = json;
-  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":4");
+  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":5");
   EXPECT_THROW(photoshop::ParseSnapshot(future), std::invalid_argument);
   auto fractional = json;
   fractional.replace(fractional.find("\"bitDepth\":8"), 12, "\"bitDepth\":8.5");

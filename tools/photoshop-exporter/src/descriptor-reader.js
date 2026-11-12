@@ -123,8 +123,33 @@ function shape(raw, path, documentBounds) {
   return value;
 }
 
+function vectorMask(raw, path, state) {
+  if (!raw.hasVectorMask || [raw.vectorMaskEnabled, raw.vectorMaskLinked, raw.vectorMaskEmpty]
+    .some(value => typeof value !== "boolean") || raw.useAlignedRendering !== false)
+    throw new Error("未确认的矢量蒙版状态");
+  const density = number(raw.vectorMaskDensity, "vectorMaskDensity") / 255;
+  const feather = number(raw.vectorMaskFeather, "vectorMaskFeather");
+  if (density < 0 || density > 1 || feather < 0) throw new Error("无效的矢量蒙版参数");
+  if (!state || typeof state.inverted !== "boolean" || typeof state.initialFill !== "boolean" ||
+      state.enabled !== raw.vectorMaskEnabled || state.linked !== raw.vectorMaskLinked)
+    throw new Error("矢量蒙版标志未确认或与描述符不一致");
+  return { ...state, density, feather,
+    components: raw.vectorMaskEmpty ? [] : pathComponents(path) };
+}
+
 class DescriptorReader {
-  constructor(ps, doc, hostVersion) { this.ps = ps; this.doc = doc; this.hostVersion = hostVersion; this.layers = new Map(); }
+  constructor(ps, doc, hostVersion, readMasks) {
+    this.ps = ps; this.doc = doc; this.hostVersion = hostVersion; this.layers = new Map();
+    this.readMasks = readMasks || (() => require("./mask-metadata.js").captureMaskMetadata(doc));
+  }
+  async maskState(id, raw) {
+    if (!this.maskMetadata) this.maskMetadata = this.readMasks().catch(() => null);
+    const metadata = await this.maskMetadata;
+    const state = metadata && metadata.get(id);
+    if (!state || state.enabled !== raw.vectorMaskEnabled || state.linked !== raw.vectorMaskLinked)
+      throw new Error("矢量蒙版标志无法可靠读取");
+    return state;
+  }
   async get(target) {
     const [result] = await this.ps.action.batchPlay([{ _obj: "get", _target: target,
       _options: { dialogOptions: "silent" } }], {});
@@ -177,7 +202,16 @@ class DescriptorReader {
     if (raw.artboardEnabled || json.artboard) source.features.push("artboard");
     if (raw.hasUserMask) source.rasterFeatures.push("pixel-mask");
     if (raw.hasFilterMask) source.rasterFeatures.push("filter-mask");
-    if (raw.hasVectorMask && source.kind !== "fill") source.rasterFeatures.push("vector-mask");
+    if (raw.hasVectorMask && source.kind !== "fill") {
+      try {
+        source.vectorMask = vectorMask(raw, raw.vectorMaskEmpty ? null : await this.get([
+          { _ref: "path", _enum: "path", _value: "vectorMask" }, ...this.target(layer.id)]),
+          await this.maskState(layer.id, raw));
+      } catch (error) { source.rasterFeatures.push(`vector-mask:${String(error)}`); }
+      // Converting masked text to a shape can replace its original mask. Keep that operation
+      // in Photoshop until its interaction with text outlines is independently qualified.
+      if (source.kind === "text") source.rasterFeatures.push("text-vector-mask");
+    }
     if (source.kind === "text") {
       source.text = raw.textKey && typeof raw.textKey.textKey === "string" ? raw.textKey.textKey : "";
       if (!source.features.length && !source.rasterFeatures.length) {
@@ -192,6 +226,8 @@ class DescriptorReader {
       try {
         if (raw.hasVectorMask) {
           source.kind = "shape";
+          const state = await this.maskState(layer.id, raw);
+          if (state.inverted || state.initialFill) throw new Error("反相或初始填充形状需要 Photoshop 渲染");
           source.shape = shape(raw, await this.get([
             { _ref: "path", _enum: "path", _value: "vectorMask" }, ...this.target(layer.id)]), bounds);
         } else {
@@ -202,4 +238,4 @@ class DescriptorReader {
     }
   }
 }
-module.exports = { DescriptorReader, pathComponents, shape, paint, color, unit };
+module.exports = { DescriptorReader, pathComponents, shape, vectorMask, paint, color, unit };

@@ -10,6 +10,9 @@
 
 namespace pagx {
 bool CanBuildShape(const photoshop::Shape& shape);
+bool CanBuildVectorMask(const std::optional<photoshop::VectorMask>& mask);
+void BuildPhotoshopVectorMask(PAGXDocument* document, Layer* layer,
+                              const photoshop::VectorMask& mask, const photoshop::Rect& canvas);
 void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::Shape& shape,
                          float fillOpacity);
 }  // namespace pagx

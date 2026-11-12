@@ -1,0 +1,1470 @@
+{
+  "vector-mask": {
+    "id": 5,
+    "kind": "group",
+    "value": {
+      "name": "Masked vectors",
+      "color": {
+        "_enum": "color",
+        "_value": "none"
+      },
+      "visible": true,
+      "mode": {
+        "_enum": "blendMode",
+        "_value": "normal"
+      },
+      "opacity": 166,
+      "layerID": 5,
+      "itemIndex": 4,
+      "count": 4,
+      "preserveTransparency": false,
+      "layerFXVisible": false,
+      "globalAngle": 90,
+      "background": false,
+      "layerSection": {
+        "_enum": "layerSectionType",
+        "_value": "layerSectionStart"
+      },
+      "layerLocking": {
+        "_obj": "layerLocking",
+        "protectTransparency": false,
+        "protectComposite": false,
+        "protectPosition": false,
+        "protectArtboardAutonest": false,
+        "protectAll": false
+      },
+      "group": false,
+      "layerSectionExpanded": false,
+      "targetChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "visibleChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "channelRestrictions": [
+        {
+          "_enum": "channel",
+          "_value": "red"
+        },
+        {
+          "_enum": "channel",
+          "_value": "grain"
+        },
+        {
+          "_enum": "channel",
+          "_value": "blue"
+        }
+      ],
+      "fillOpacity": 255,
+      "hasUserMask": false,
+      "hasVectorMask": true,
+      "proportionalScaling": false,
+      "layerKind": 7,
+      "hasFilterMask": false,
+      "userMaskDensity": 255,
+      "userMaskFeather": 0,
+      "vectorMaskDensity": 255,
+      "vectorMaskFeather": 0,
+      "filterMaskDensity": 255,
+      "filterMaskFeather": 0,
+      "bounds": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 20
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 18
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 170
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 211
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 193
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 150
+        }
+      },
+      "boundsNoEffects": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 20
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 18
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 170
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 211
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 193
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 150
+        }
+      },
+      "boundsNoMask": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "pathBounds": {
+        "_obj": "rectangle",
+        "pathBounds": {
+          "_obj": "classFloatRect",
+          "top": 20.75,
+          "left": 18.25,
+          "bottom": 169.5,
+          "right": 210.5
+        }
+      },
+      "useAlignedRendering": false,
+      "generatorSettings": {
+        "_obj": "generatorSettings"
+      },
+      "keyOriginType": [],
+      "fillEnabled": true,
+      "animationProtection": {
+        "_obj": "animationProtection",
+        "animationUnifyPosition": false,
+        "animationUnifyEffects": false,
+        "animationUnifyVisibility": false,
+        "animationPropagate": true
+      },
+      "isSyntheticFill": false,
+      "artboardEnabled": false,
+      "vectorMaskEnabled": true,
+      "vectorMaskEmpty": false,
+      "vectorMaskLinked": true,
+      "textWarningLevel": 0,
+      "parentLayerID": -1
+    },
+    "path": {
+      "pathName": "Masked vectors 矢量蒙版",
+      "pathContents": {
+        "_obj": "pathClass",
+        "pathComponents": [
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "add"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.75
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 210.5
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 27.25
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 201.75
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 169.5
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 18.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 159.75
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "subtract"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "itemIndex": 2,
+      "count": 2,
+      "kind": {
+        "_enum": "pathKind",
+        "_value": "vectorMask"
+      },
+      "targetPath": true,
+      "ID": 1336
+    },
+    "metadata": {
+      "inverted": false,
+      "linked": true,
+      "enabled": true,
+      "initialFill": false
+    }
+  },
+  "vector-mask-disabled": {
+    "id": 5,
+    "kind": "group",
+    "value": {
+      "name": "Masked vectors",
+      "color": {
+        "_enum": "color",
+        "_value": "none"
+      },
+      "visible": true,
+      "mode": {
+        "_enum": "blendMode",
+        "_value": "normal"
+      },
+      "opacity": 166,
+      "layerID": 5,
+      "itemIndex": 4,
+      "count": 4,
+      "preserveTransparency": false,
+      "layerFXVisible": false,
+      "globalAngle": 90,
+      "background": false,
+      "layerSection": {
+        "_enum": "layerSectionType",
+        "_value": "layerSectionStart"
+      },
+      "layerLocking": {
+        "_obj": "layerLocking",
+        "protectTransparency": false,
+        "protectComposite": false,
+        "protectPosition": false,
+        "protectArtboardAutonest": false,
+        "protectAll": false
+      },
+      "group": false,
+      "layerSectionExpanded": false,
+      "targetChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "visibleChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "channelRestrictions": [
+        {
+          "_enum": "channel",
+          "_value": "red"
+        },
+        {
+          "_enum": "channel",
+          "_value": "grain"
+        },
+        {
+          "_enum": "channel",
+          "_value": "blue"
+        }
+      ],
+      "fillOpacity": 255,
+      "hasUserMask": false,
+      "hasVectorMask": true,
+      "proportionalScaling": false,
+      "layerKind": 7,
+      "hasFilterMask": false,
+      "userMaskDensity": 255,
+      "userMaskFeather": 0,
+      "vectorMaskDensity": 255,
+      "vectorMaskFeather": 0,
+      "filterMaskDensity": 255,
+      "filterMaskFeather": 0,
+      "bounds": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "boundsNoEffects": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 5
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 5
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 185
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 240
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 235
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 180
+        }
+      },
+      "boundsNoMask": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "pathBounds": {
+        "_obj": "rectangle",
+        "pathBounds": {
+          "_obj": "classFloatRect",
+          "top": 20.75,
+          "left": 18.25,
+          "bottom": 169.5,
+          "right": 210.5
+        }
+      },
+      "useAlignedRendering": false,
+      "generatorSettings": {
+        "_obj": "generatorSettings"
+      },
+      "keyOriginType": [],
+      "fillEnabled": true,
+      "animationProtection": {
+        "_obj": "animationProtection",
+        "animationUnifyPosition": false,
+        "animationUnifyEffects": false,
+        "animationUnifyVisibility": false,
+        "animationPropagate": true
+      },
+      "isSyntheticFill": false,
+      "artboardEnabled": false,
+      "vectorMaskEnabled": false,
+      "vectorMaskEmpty": false,
+      "vectorMaskLinked": true,
+      "textWarningLevel": 0,
+      "parentLayerID": -1
+    },
+    "path": {
+      "pathName": "Masked vectors 矢量蒙版",
+      "pathContents": {
+        "_obj": "pathClass",
+        "pathComponents": [
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "add"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.75
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 210.5
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 27.25
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 201.75
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 169.5
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 18.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 159.75
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "subtract"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "itemIndex": 2,
+      "count": 2,
+      "kind": {
+        "_enum": "pathKind",
+        "_value": "vectorMask"
+      },
+      "targetPath": true,
+      "ID": 1369
+    },
+    "metadata": {
+      "inverted": false,
+      "linked": true,
+      "enabled": false,
+      "initialFill": false
+    }
+  },
+  "vector-mask-feather": {
+    "id": 5,
+    "kind": "group",
+    "value": {
+      "name": "Masked vectors",
+      "color": {
+        "_enum": "color",
+        "_value": "none"
+      },
+      "visible": true,
+      "mode": {
+        "_enum": "blendMode",
+        "_value": "normal"
+      },
+      "opacity": 166,
+      "layerID": 5,
+      "itemIndex": 4,
+      "count": 4,
+      "preserveTransparency": false,
+      "layerFXVisible": false,
+      "globalAngle": 90,
+      "background": false,
+      "layerSection": {
+        "_enum": "layerSectionType",
+        "_value": "layerSectionStart"
+      },
+      "layerLocking": {
+        "_obj": "layerLocking",
+        "protectTransparency": false,
+        "protectComposite": false,
+        "protectPosition": false,
+        "protectArtboardAutonest": false,
+        "protectAll": false
+      },
+      "group": false,
+      "layerSectionExpanded": false,
+      "targetChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "visibleChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "channelRestrictions": [
+        {
+          "_enum": "channel",
+          "_value": "red"
+        },
+        {
+          "_enum": "channel",
+          "_value": "grain"
+        },
+        {
+          "_enum": "channel",
+          "_value": "blue"
+        }
+      ],
+      "fillOpacity": 255,
+      "hasUserMask": false,
+      "hasVectorMask": true,
+      "proportionalScaling": false,
+      "layerKind": 7,
+      "hasFilterMask": false,
+      "userMaskDensity": 255,
+      "userMaskFeather": 0,
+      "vectorMaskDensity": 255,
+      "vectorMaskFeather": 3,
+      "filterMaskDensity": 255,
+      "filterMaskFeather": 0,
+      "bounds": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 12
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 10
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 178
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 219
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 209
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 166
+        }
+      },
+      "boundsNoEffects": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 12
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 10
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 178
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 219
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 209
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 166
+        }
+      },
+      "boundsNoMask": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "pathBounds": {
+        "_obj": "rectangle",
+        "pathBounds": {
+          "_obj": "classFloatRect",
+          "top": 20.75,
+          "left": 18.25,
+          "bottom": 169.5,
+          "right": 210.5
+        }
+      },
+      "useAlignedRendering": false,
+      "generatorSettings": {
+        "_obj": "generatorSettings"
+      },
+      "keyOriginType": [],
+      "fillEnabled": true,
+      "animationProtection": {
+        "_obj": "animationProtection",
+        "animationUnifyPosition": false,
+        "animationUnifyEffects": false,
+        "animationUnifyVisibility": false,
+        "animationPropagate": true
+      },
+      "isSyntheticFill": false,
+      "artboardEnabled": false,
+      "vectorMaskEnabled": true,
+      "vectorMaskEmpty": false,
+      "vectorMaskLinked": true,
+      "textWarningLevel": 0,
+      "parentLayerID": -1
+    },
+    "path": {
+      "pathName": "Masked vectors 矢量蒙版",
+      "pathContents": {
+        "_obj": "pathClass",
+        "pathComponents": [
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "add"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.75
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 210.5
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 27.25
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 201.75
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 169.5
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 18.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 159.75
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "subtract"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 130
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "itemIndex": 2,
+      "count": 2,
+      "kind": {
+        "_enum": "pathKind",
+        "_value": "vectorMask"
+      },
+      "targetPath": true,
+      "ID": 1403
+    },
+    "metadata": {
+      "inverted": false,
+      "linked": true,
+      "enabled": true,
+      "initialFill": false
+    }
+  },
+  "vector-mask-inverted": {
+    "id": 5,
+    "kind": "group",
+    "value": {
+      "name": "Masked vectors",
+      "color": {
+        "_enum": "color",
+        "_value": "none"
+      },
+      "visible": true,
+      "mode": {
+        "_enum": "blendMode",
+        "_value": "normal"
+      },
+      "opacity": 166,
+      "layerID": 5,
+      "itemIndex": 4,
+      "count": 5,
+      "preserveTransparency": false,
+      "layerFXVisible": false,
+      "globalAngle": 90,
+      "background": false,
+      "layerSection": {
+        "_enum": "layerSectionType",
+        "_value": "layerSectionStart"
+      },
+      "layerLocking": {
+        "_obj": "layerLocking",
+        "protectTransparency": false,
+        "protectComposite": false,
+        "protectPosition": false,
+        "protectArtboardAutonest": false,
+        "protectAll": false
+      },
+      "group": false,
+      "layerSectionExpanded": false,
+      "targetChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "visibleChannels": [
+        {
+          "_ref": "channel",
+          "_index": 1
+        },
+        {
+          "_ref": "channel",
+          "_index": 2
+        },
+        {
+          "_ref": "channel",
+          "_index": 3
+        }
+      ],
+      "channelRestrictions": [
+        {
+          "_enum": "channel",
+          "_value": "red"
+        },
+        {
+          "_enum": "channel",
+          "_value": "grain"
+        },
+        {
+          "_enum": "channel",
+          "_value": "blue"
+        }
+      ],
+      "fillOpacity": 255,
+      "hasUserMask": false,
+      "hasVectorMask": true,
+      "proportionalScaling": false,
+      "layerKind": 7,
+      "hasFilterMask": false,
+      "userMaskDensity": 255,
+      "userMaskFeather": 0,
+      "vectorMaskDensity": 255,
+      "vectorMaskFeather": 0,
+      "filterMaskDensity": 255,
+      "filterMaskFeather": 0,
+      "bounds": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "boundsNoEffects": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 5
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 5
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 185
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 240
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 235
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 180
+        }
+      },
+      "boundsNoMask": {
+        "_obj": "rectangle",
+        "top": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "left": {
+          "_unit": "pixelsUnit",
+          "_value": 0
+        },
+        "bottom": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        },
+        "right": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "width": {
+          "_unit": "pixelsUnit",
+          "_value": 256
+        },
+        "height": {
+          "_unit": "pixelsUnit",
+          "_value": 192
+        }
+      },
+      "pathBounds": {
+        "_obj": "rectangle",
+        "pathBounds": {
+          "_obj": "classFloatRect",
+          "top": 20.75,
+          "left": 18.25,
+          "bottom": 169.5,
+          "right": 210.5
+        }
+      },
+      "useAlignedRendering": false,
+      "generatorSettings": {
+        "_obj": "generatorSettings"
+      },
+      "keyOriginType": [],
+      "fillEnabled": true,
+      "animationProtection": {
+        "_obj": "animationProtection",
+        "animationUnifyPosition": false,
+        "animationUnifyEffects": false,
+        "animationUnifyVisibility": false,
+        "animationPropagate": true
+      },
+      "isSyntheticFill": false,
+      "artboardEnabled": false,
+      "vectorMaskEnabled": true,
+      "vectorMaskEmpty": false,
+      "vectorMaskLinked": true,
+      "textWarningLevel": 0,
+      "parentLayerID": -1
+    },
+    "path": {
+      "pathName": "Masked vectors 矢量蒙版",
+      "pathContents": {
+        "_obj": "pathClass",
+        "pathComponents": [
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "add"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 20.750003814697266
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 210.5
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 27.249996185302734
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 201.75
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 169.5
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 18.25
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 159.75
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "_obj": "pathComponent",
+            "shapeOperation": {
+              "_enum": "shapeOperation",
+              "_value": "subtract"
+            },
+            "subpathListKey": [
+              {
+                "_obj": "subpathsList",
+                "closedSubpath": true,
+                "points": [
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50.000003814697266
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 50.000003814697266
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 160
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 129.99999618530273
+                      }
+                    }
+                  },
+                  {
+                    "_obj": "pathPoint",
+                    "anchor": {
+                      "_obj": "paint",
+                      "horizontal": {
+                        "_unit": "pixelsUnit",
+                        "_value": 65
+                      },
+                      "vertical": {
+                        "_unit": "pixelsUnit",
+                        "_value": 129.99999618530273
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "itemIndex": 0,
+      "count": 2,
+      "kind": {
+        "_enum": "pathKind",
+        "_value": "normalPath"
+      },
+      "targetPath": true,
+      "ID": 1573
+    },
+    "metadata": {
+      "inverted": true,
+      "linked": true,
+      "enabled": true,
+      "initialFill": false
+    }
+  }
+}

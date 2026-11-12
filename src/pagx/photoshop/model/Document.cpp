@@ -56,10 +56,9 @@ void CheckPaint(const Paint& paint) {
     previous = stop.position;
   }
 }
-void CheckShape(const Shape& shape, size_t& pointCount) {
-  Require(!shape.components.empty() && shape.components.size() <= 100000,
-          "invalid path components");
-  for (const auto& component : shape.components) {
+void CheckComponents(const std::vector<PathComponent>& components, size_t& pointCount) {
+  Require(!components.empty() && components.size() <= 100000, "invalid path components");
+  for (const auto& component : components) {
     Require(component.operation == PathOperation::Add ||
                 component.operation == PathOperation::Subtract ||
                 component.operation == PathOperation::Intersect ||
@@ -77,6 +76,9 @@ void CheckShape(const Shape& shape, size_t& pointCount) {
       }
     }
   }
+}
+void CheckShape(const Shape& shape, size_t& pointCount) {
+  CheckComponents(shape.components, pointCount);
   if (shape.fill) CheckPaint(*shape.fill);
   if (shape.stroke) {
     const auto& stroke = *shape.stroke;
@@ -132,6 +134,13 @@ void CheckLayers(const std::vector<Layer>& layers, size_t depth,
               "invalid fill owner or schema");
       CheckPaint(*layer.fill);
     }
+    if (layer.vectorMask) {
+      const auto& mask = *layer.vectorMask;
+      Require(version >= 4, "v4 mask in legacy snapshot");
+      Require(Unit(mask.density) && std::isfinite(mask.feather) && mask.feather >= 0,
+              "invalid vector mask appearance");
+      if (!mask.components.empty()) CheckComponents(mask.components, pointCount);
+    }
     Require(version >= 2 || layer.rasterFeatures.empty(), "v2 appearance in v1 snapshot");
     CheckLayers(layer.children, depth + 1, ids, pointCount, version);
   }
@@ -148,7 +157,7 @@ void CheckClipping(const std::vector<Layer>& layers) {
 }  // namespace
 
 void Validate(const Document& document) {
-  Require(document.schemaVersion >= 1 && document.schemaVersion <= 3, "unsupported schema version");
+  Require(document.schemaVersion >= 1 && document.schemaVersion <= 4, "unsupported schema version");
   CheckRect(document.bounds);
   Require(document.bounds.width > 0 && document.bounds.height > 0, "empty export canvas");
   Require(std::isfinite(document.resolution) && document.resolution > 0, "invalid resolution");

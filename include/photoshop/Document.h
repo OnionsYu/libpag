@@ -118,6 +118,18 @@ struct Shape {
   std::optional<Stroke> stroke = {};
 };
 
+// Independent layer mask, distinct from a fill layer's shape geometry. The linked flag is
+// retained as source editing metadata; points already include the current document transform.
+struct VectorMask {
+  bool enabled = true;
+  bool linked = true;
+  bool inverted = false;
+  bool initialFill = false;
+  float density = 1;
+  float feather = 0;
+  std::vector<PathComponent> components = {};
+};
+
 struct Layer {
   std::string id = {};
   int64_t sourceLayerId = -1;
@@ -141,11 +153,12 @@ struct Layer {
   std::optional<Shape> shape = {};
   // Unmasked fill layers cover the explicit document export rectangle, not layer.bounds.
   std::optional<Paint> fill = {};
+  std::optional<VectorMask> vectorMask = {};
   std::vector<Layer> children = {};
 };
 
 struct Document {
-  int schemaVersion = 3;
+  int schemaVersion = 4;
   std::string name = {};
   std::string hostVersion = {};
   float resolution = 72;

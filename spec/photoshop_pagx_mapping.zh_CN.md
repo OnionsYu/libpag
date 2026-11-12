@@ -4,9 +4,9 @@
 
 `include/photoshop/Document.h` 是宿主无关的源模型，不依赖 Photoshop SDK 或 PAGX。
 `PhotoshopImporter` 负责分析与转换，输出已有 `PAGXDocument`；XML 由 `PAGXExporter`
-生成。入口接收 Photoshop 采集的快照，不解析 PSD 文件字节。
+生成。核心入口接收 Photoshop 采集的快照，不解析 PSD 文件像素或合成缓存。
 
-桥接协议版本为 2，源快照版本为 3（兼容 v1/v2）。图层树按从底到顶排列，所有边界采用文档像素坐标，保留负坐标及小数。
+桥接协议版本为 2，源快照版本为 4（兼容 v1/v2/v3）。图层树按从底到顶排列，所有边界采用文档像素坐标，保留负坐标及小数。
 Opacity、Fill 和颜色分量为 0～1。`compositingKnown=false` 表示合成信息未知，不能
 视为 Normal。`features` 保存当前转换器无法原生表达的能力标记。隐藏子树不参与当前
 状态输出，但仍受结构校验。该导出不保证修改可见性后的其他状态等价。
@@ -27,6 +27,14 @@ v3 将 `Shape.fill` 和 `Stroke.paint` 统一为带 `kind` 的 Paint。纯色保
 不让运行时同时解释多套格式。模型可保存的语义与已通过宿主验证的能力分别判断。
 未知的渐变插值不视为线性；当前渐变仍局部回退，保留完整已解码属性供后续映射。
 
+v4 增加独立 `VectorMask`，保存 enabled、linked、inverted、initialFill、density、feather
+及文档坐标路径组件，
+与填充层自身的 Shape 分开。禁用蒙版不参与当前状态渲染；已验证的封闭硬蒙版使用
+独立 Contour 节点，保留组内矢量、布尔孔洞及组透明度。Linked 仅为编辑元数据，不能
+据此重复应用变换。反相使用导出画布内的几何补集；羽化、非满密度、初始填满、初始非
+Add、空/开放蒙版仍回退；启用蒙版的穿透组
+连同所需背景采集。带独立蒙版的文字仍回退，避免轮廓化替换原蒙版。
+
 无矢量蒙版的填充层使用 `Layer.fill`，保留 Fill 图层种类；其绘制范围是明确的导出
 画布，不是图层像素边界。有像素蒙版等未映射外观时仍按本层回退。
 形状虚线在描述符中使用真正的点单位，以 `strokeStyleResolution / 72` 换算为像素，
@@ -41,6 +49,16 @@ Photoshop 27.4 / JSON 1.6.1 契约内把缺失的高级混合属性解释为默�
 另读 application `colorSettings.RGBBlendGamma`，只有实测的 `false` 才通过矢量门禁。
 启用、缺字段或读取失败均写入文档 `features` 并回退整图；不能因图层是 Normal 就忽略
 全局混合环境。此查询不修改用户颜色设置。
+
+Photoshop 27.4 的 layer/path get 和 action JSON 均会遗漏 `vmsk` 的反相标志。
+宿主在需要矢量蒙版状态时，将工作文档另存为插件临时目录内的 PSD 副本，按图层 ID
+读取 `vmsk`/`vsms` flags 与 selector 8 初始填充记录，再与描述符的 enabled/linked
+交叉校验。只读取图层元数据，跳过像素通道和合成缓存；读取量限制为 32 MiB，每块读取
+不超过 53,248 字节，文件句柄与临时文件在 finally 清理。当前辅助读取器仅验证 8-bit
+PSD v1；保存/读取失败、未来格式、未知标志或状态冲突均局部回退，不猜测缺失标志。
+该步骤增加一次临时保存开销。反相形状的填充/描边组合仍回退；独立硬蒙版的反相保留矢量。
+格式依据为 [Adobe PSD 规范](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/)，
+分块读取使用 [UXP fs API](https://developer.adobe.com/photoshop/uxp/2021/uxp/reference-js/Modules/FileSystem/)。
 
 PAGX 的填充规则属于 Fill，不属于 PathData。EvenOdd 形状的内外描边因此使用双倍宽度
 的居中 Stroke 和独立矢量 Contour 蒙版；外描边使用包围完整描边范围的有限补集。
@@ -71,6 +89,8 @@ PAGX 的填充规则属于 Fill，不属于 PathData。EvenOdd 形状的内外�
 祖先组不透明度暂设为 100%，从**文档合成结果**读取像素；被采集根层自身 Opacity、Fill、
 蒙版和变换已经烘焙，转换器不再应用。未被采集的祖先透明度由 PAGX 组应用一次。
 每次采集都恢复原始透明度，防止前一次采集的祖先中和影响后续组采集。
+原生祖先矢量蒙版也在局部采集时禁用，由 PAGX 祖先裁剪一次；每次采集恢复非祖先的
+原始蒙版启用状态，被采集根层自身的蒙版仍烘焙。中和失败即中止，不输出重复裁剪结果。
 直接读取 `getPixels(layerID)` 不能未经验证就视为满足此契约。
 
 图像为 1:1 像素、sRGB、保留透明度的 PNG。边界必须使用宿主实际返回值。完全透明

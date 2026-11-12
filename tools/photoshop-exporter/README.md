@@ -9,11 +9,15 @@
 - 选择输出目录，生成自包含的 `.pagx`，PNG 图像嵌入文件，并生成同名 `.pagx.report.json`。
   报告列出源颜色/位深、输出方式、矢量与位图计数、合成范围、图层名称和降级原因。
   面板显示这些统计及前 12 条诊断；完整诊断均保留在报告中。同名文件自动编号。
-- v0.2 对经过验证的 RGB/sRGB/8 位形状导出 **原生贝塞尔路径、复合路径、纯色填充和实线描边**，保留小数坐标、旋转和越界几何。像素层保留为位图。单色文字使用 Photoshop 生成的矢量轮廓；混色、变形、缺字体文字及其他未映射的局部外观由 Photoshop 渲染。调整、剪贴、特殊混合按隔离边界计算连续依赖范围，范围外继续保留矢量；未知合成和挖空仍回退整图。隐藏图层不参与当前画面。
+- v0.4 对经过验证的 RGB/sRGB/8 位形状导出 **原生贝塞尔路径、复合路径、纯色填充、实线及合格的居中虚线**，保留小数坐标、旋转和越界几何。支持独立硬矢量蒙版及其反相、7 种已验证的非 Normal 混合和组隔离。像素层保留为位图。单色文字使用 Photoshop 生成的矢量轮廓；混色、变形、缺字体文字及其他未映射的局部外观由 Photoshop 渲染。调整、剪贴、特殊混合按隔离边界计算连续依赖范围，范围外继续保留矢量；未知合成和挖空仍回退整图。隐藏图层不参与当前画面。
 - 支持普通画布、方形像素的 8/16 位源文档；画板、非方形像素、32 位 HDR 和 1 位位图明确拒绝。8 位画布上限 64M 像素，16 位上限 32M，编码图像总计上限 128 MiB，XML 上限 256 MiB。转换为 8 位意味着有精度损失。
 - 已实测 RGB 8/16 位；其他颜色模式和不同 ICC 配置仍需补充宿主样例，不能视为已全面验证。
 
-**DOM 的 normal 模式及普通 layer get 都不足以证明高级混合为默认值**。适配器同时读取 action 的完整 `json` 属性和图层/路径描述符。已在 Photoshop 27.4、JSON 1.6.1 中验证 Blend If、挖空、内部混合、剪贴混合及透明形状标记可被完整 JSON 检出；缺失能力、其他宿主或 JSON 版本保持 unknown，安全回退。实线描边的非默认透明度、虚线、像素对齐及未支持的填充有明确回退。
+**DOM 的 normal 模式及普通 layer get 都不足以证明高级混合为默认值**。适配器同时读取 action 的完整 `json` 属性和图层/路径描述符。已在 Photoshop 27.4、JSON 1.6.1 中验证 Blend If、挖空、内部混合、剪贴混合及透明形状标记可被完整 JSON 检出；缺失能力、其他宿主或 JSON 版本保持 unknown，安全回退。另验证应用 RGB 混合 gamma。非默认描边透明度、未验证的虚线组合、像素对齐及渐变/图案填充继续回退。
+
+蒙版反相标志在上述接口中仍会遗漏，因此需要时额外保存一份插件私有的临时 PSD，
+只分块读取图层 ID、矢量蒙版 flags 和初始填充记录，不读取像素通道。临时文件随后删除。
+不能可靠取得这些状态时按本层回退；该完整性检查会增加一次临时保存开销。
 
 ## 分层与协议
 
@@ -29,7 +33,7 @@ UXP 面板 main.js
 
 三个规范/转换层均不依赖 UXP。详细语义见 [PS → PAGX 映射规范](../../spec/photoshop_pagx_mapping.zh_CN.md) 和 [PSD 图层规范](../../spec/psd_layer_spec.zh_CN.md)。C++ 输入类型位于 `include/photoshop/Document.h`，JSON 解析器拒绝未知字段、未来版本、缺少字段和非法数据。
 
-桥接协议版本为 2、源快照版本为 2（原生解析器仍接受 v1）：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划、统计、诊断和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。采集请求包含连续兄弟范围 `layerIds` 及其父组 `parentId`；协议不匹配会拒绝加载。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
+桥接协议版本为 2、源快照版本为 4（原生解析器仍接受 v1/v2/v3）：`info()` 握手 → `begin(snapshotJSON, forceComposite)` 返回采集计划、统计、诊断和会话 → 按计划顺序 `addRaster(session, metadataJSON, ArrayBuffer)` → `finish(session)` 返回已回读校验的 XML；失败调用幂等的 `discard(session)`。采集请求包含连续兄弟范围 `layerIds` 及其父组 `parentId`；协议不匹配会拒绝加载。像素必须为实际返回区域的 chunky RGB/RGBA、sRGB、straight alpha。8 位输入用 `Uint8Array`；16 位输入用原生字节序 `Uint16Array`，`fullRange=true`（0..65535），由 C++ 按最近值量化到 8 位。不能将请求区域当作实际区域，也不能重复乘图层透明度。像素只在回调内访问，PNG 编码后释放宿主图像资源。
 
 原生调用是有大小上限的同步调用，取消在步骤之间生效；编码期间不能保证即时响应。宿主操作在 `executeAsModal` 中，临时文档立即注册 `registerAutoCloseDocument`，包括 Esc 取消都由 Photoshop 清理。没有写入任何源 PSD 的路径。
 
@@ -190,7 +194,7 @@ python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder 
 `.tmp/photoshop-vector-validation/`（不进入 Git 或插件包）。
 
 macOS arm64 原生模块已重建并通过 ad-hoc 签名检查，开发 CCX 已生成，包内仅含 15 个
-运行文件/目录项，不包含 SDK、测试脚本或样本。**最终协议 2 插件的重新加载、报告发布
+运行文件/目录项，不包含 SDK、测试脚本或样本。**该次构建时，协议 2 插件的重新加载、报告发布
 及新增局部合成场景尚未完成宿主验收**，不得将本段构建和重放结果解释为已通过完整
 Photoshop 回归。渐变、独立蒙版语义、可编辑文字仍未原生映射；使用已说明的局部/整图
 回退或明确拒绝，不能宣称任意 PSD 都输出纯矢量。
@@ -274,4 +278,42 @@ python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-st
 python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
   --cli ./cmake-build-debug/pagx --images 1 --scales 1 \
   --names blend-softlight clipping group-mask adjustment
+```
+
+### 独立矢量蒙版与反相状态（2026-11-12）
+
+源快照 v4 / 插件 0.4.0 保留独立蒙版的启用、链接、反相、初始填充、密度和羽化状态。
+20 项 C++、30 项 Node 测试通过，旧 v2/v3 快照重放通过。普通、禁用及反相硬蒙版
+均完成真实 Photoshop 1×/4× 对照并保持 0 个 Image；反相样例专门修改 PSD 的 flags，
+不改变路径，从而覆盖 layer/path get 和 JSON 同时遗漏该状态的问题。
+临时 PSD 元数据读取使用 UXP 私有目录和分块 fs API，已在真实宿主验证。
+
+羽化、半密度、蒙版组内局部位图、带蒙版穿透组及反相形状共 5 个回退场景完成 1×
+对照。蒙版组内采集只中和祖先蒙版，根层自身蒙版仍烘焙，保证轮廓边缘不被裁剪两次。
+最终回归还覆盖前几阶段的孔洞内外描边、圆头虚线、无蒙版填充和 Multiply；原生场景
+均通过 1×/4× 比较，沿用现有阈值。报告为 `.tmp/photoshop-vector-stage1/stage4-final-*.json`。
+
+```js
+await require("./test/host-masks.js").run(folder);
+```
+
+反相回归使用 `vector-mask.psd` 中描述符记录的组 ID（生成器当前为 5），先在终端生成
+新测试文件，再在 UDT 记录重新合成的独立基准并导出；不使用 PSD 中未更新的合成预览：
+
+```sh
+python3 tools/photoshop-exporter/test/invert-mask-fixture.py \
+  .tmp/photoshop-vector-stage1/vector-mask.psd \
+  .tmp/photoshop-vector-stage1/vector-mask-inverted.psd --layer-id 5
+```
+
+```js
+await require("./test/host-masks.js").inverted(folder);
+```
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --names vector-mask vector-mask-disabled vector-mask-inverted
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --images 1 --scales 1 \
+  --names vector-mask-feather vector-mask-density vector-mask-raster-child vector-mask-pass-through
 ```

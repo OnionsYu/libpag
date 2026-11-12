@@ -101,10 +101,8 @@ Paint ReadPaint(const JSON& value) {
     throw std::invalid_argument("Unknown paint kind: " + kind);
   return paint;
 }
-Shape ReadShape(const JSON& value, int version) {
-  Keys(value, {"components", "fill", "stroke"});
-  Shape shape;
-  const auto& components = value.at("components");
+std::vector<PathComponent> ReadComponents(const JSON& components) {
+  std::vector<PathComponent> result;
   if (!components.is_array()) throw std::invalid_argument("Expected path components array");
   for (const auto& c : components) {
     Keys(c, {"operation", "winding", "subpaths"});
@@ -133,8 +131,14 @@ Shape ReadShape(const JSON& value, int version) {
       }
       component.subpaths.push_back(std::move(path));
     }
-    shape.components.push_back(std::move(component));
+    result.push_back(std::move(component));
   }
+  return result;
+}
+Shape ReadShape(const JSON& value, int version) {
+  Keys(value, {"components", "fill", "stroke"});
+  Shape shape;
+  shape.components = ReadComponents(value.at("components"));
   if (value.contains("fill"))
     shape.fill = version >= 3 ? ReadPaint(value.at("fill")) : Paint(ReadColor(value.at("fill")));
   if (value.contains("stroke")) {
@@ -162,7 +166,7 @@ std::vector<Layer> Layers(const JSON& value, int version) {
   for (const auto& item : value) {
     Keys(item, {"id", "sourceLayerId", "name", "kind", "visible", "opacity", "fillOpacity",
                 "blendMode", "compositingKnown", "clippingBase", "features", "bounds", "text",
-                "rectangle", "children", "shape", "rasterFeatures", "fill"});
+                "rectangle", "children", "shape", "rasterFeatures", "fill", "vectorMask"});
     Layer layer;
     layer.id = item.at("id").get<std::string>();
     layer.sourceLayerId = Integer(item.at("sourceLayerId"));
@@ -193,6 +197,19 @@ std::vector<Layer> Layers(const JSON& value, int version) {
     }
     if (item.contains("shape")) layer.shape = ReadShape(item.at("shape"), version);
     if (item.contains("fill")) layer.fill = ReadPaint(item.at("fill"));
+    if (item.contains("vectorMask")) {
+      const auto& v = item.at("vectorMask");
+      Keys(v, {"enabled", "linked", "inverted", "initialFill", "density", "feather", "components"});
+      VectorMask mask;
+      mask.enabled = v.at("enabled").get<bool>();
+      mask.linked = v.at("linked").get<bool>();
+      mask.inverted = v.at("inverted").get<bool>();
+      mask.initialFill = v.at("initialFill").get<bool>();
+      mask.density = Number(v.at("density"));
+      mask.feather = Number(v.at("feather"));
+      mask.components = ReadComponents(v.at("components"));
+      layer.vectorMask = std::move(mask);
+    }
     layer.children = Layers(item.at("children"), version);
     result.push_back(std::move(layer));
   }

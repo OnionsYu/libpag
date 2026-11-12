@@ -83,8 +83,8 @@ addon_value Guard(addon_env env, Function function) noexcept {
 addon_value Info(addon_env env, addon_callback_info) {
   return Guard(env, [&] {
     return String(env, JSON{{"protocolVersion", 2},
-                            {"schemaVersion", 3},
-                            {"version", "0.3.0"},
+                            {"schemaVersion", 4},
+                            {"version", "0.4.0"},
                             {"maxPixels", MaxPixels},
                             {"maxEncodedBytes", MaxEncodedBytes}}
                            .dump());

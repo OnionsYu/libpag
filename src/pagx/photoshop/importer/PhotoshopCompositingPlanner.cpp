@@ -26,16 +26,20 @@ bool IsPhotoshopGroup(const photoshop::Layer& layer) {
   return layer.kind == photoshop::LayerKind::Group;
 }
 bool IsNativePhotoshopLayer(const photoshop::Layer& layer) {
-  return layer.rasterFeatures.empty() &&
+  return layer.rasterFeatures.empty() && CanBuildVectorMask(layer.vectorMask) &&
          (layer.rectangle || (layer.shape && CanBuildShape(*layer.shape)) ||
           (layer.fill && CanBuildPhotoshopPaint(*layer.fill)));
 }
 bool IsEmptyPhotoshopLayer(const photoshop::Layer& layer) {
   return layer.kind == photoshop::LayerKind::Pixel && layer.bounds.width == 0 &&
-         layer.bounds.height == 0 && layer.rasterFeatures.empty();
+         layer.bounds.height == 0 && layer.rasterFeatures.empty() && !layer.vectorMask;
 }
 namespace {
 using Layers = std::vector<photoshop::Layer>;
+bool IsNativeGroup(const photoshop::Layer& layer) {
+  return IsPhotoshopGroup(layer) && layer.fillOpacity == 1 && layer.rasterFeatures.empty() &&
+         CanBuildVectorMask(layer.vectorMask);
+}
 bool EscapesIsolation(const Layers& layers, PhotoshopConversionPlan& plan) {
   bool escapes = false;
   for (const auto& layer : layers) {
@@ -68,15 +72,14 @@ bool NeedsRasterBackdrop(const photoshop::Layer& layer) {
   if (!layer.features.empty() || layer.kind == photoshop::LayerKind::Adjustment) return true;
   if (layer.blendMode == "normal") return false;
   if (IsPhotoshopGroup(layer) && layer.blendMode == "passThrough" && layer.opacity == 1 &&
-      layer.fillOpacity == 1 && layer.rasterFeatures.empty()) {
+      IsNativeGroup(layer) && (!layer.vectorMask || !layer.vectorMask->enabled)) {
     return HasBackdropClipping(layer.children) ||
            std::any_of(layer.children.begin(), layer.children.end(), NeedsRasterBackdrop);
   }
   // Reading the backdrop does not require rasterization when PAGX can perform that blend at
   // the same isolation boundary. Unsupported content still captures its required backdrop.
   if (NativePhotoshopBlendMode(layer.blendMode) &&
-      (IsNativePhotoshopLayer(layer) ||
-       (IsPhotoshopGroup(layer) && layer.fillOpacity == 1 && layer.rasterFeatures.empty())))
+      (IsNativePhotoshopLayer(layer) || IsNativeGroup(layer)))
     return false;
   return true;
 }
@@ -135,7 +138,7 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
       continue;
     }
     if (!layer.visible) continue;
-    if (IsPhotoshopGroup(layer) && layer.fillOpacity == 1 && layer.rasterFeatures.empty()) {
+    if (IsNativeGroup(layer)) {
       AnalyzeSiblings(layer.children, layer.id, plan);
     } else if (IsNativePhotoshopLayer(layer)) {
       if (layer.kind == photoshop::LayerKind::Text) {
@@ -147,7 +150,8 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
         plan.statistics.vectorShapes++;
     } else if (!IsEmptyPhotoshopLayer(layer)) {
       plan.rasters.push_back({"layer:" + layer.id, layer.id, {layer.id}, parentId});
-      if (layer.kind == photoshop::LayerKind::Pixel && layer.rasterFeatures.empty()) {
+      if (layer.kind == photoshop::LayerKind::Pixel && layer.rasterFeatures.empty() &&
+          !layer.vectorMask) {
         plan.statistics.sourceImages++;
       } else {
         plan.statistics.fallbackScopes++;
@@ -157,6 +161,7 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
               " Path operations, paint or stroke semantics are not qualified for native output.";
         if (layer.fill && !CanBuildPhotoshopPaint(*layer.fill))
           reason += " The fill paint is not qualified for native output.";
+        if (layer.vectorMask) reason += " The vector mask is baked with its content.";
         for (const auto& feature : layer.rasterFeatures) reason += " " + feature;
         plan.diagnostics.push_back({"rasterized-content", layer.id, reason});
       }

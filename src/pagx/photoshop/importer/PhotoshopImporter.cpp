@@ -141,6 +141,8 @@ class Builder {
         // Leaf opacity/fill/masks/transforms were already baked into the host capture.
         addRaster(layer, "layer:" + item.id);
       }
+      if (item.vectorMask)
+        BuildPhotoshopVectorMask(document.get(), layer, *item.vectorMask, source.bounds);
     }
   }
 
