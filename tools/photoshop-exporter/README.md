@@ -218,7 +218,7 @@ python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-st
   --names hole stroke transformed hole-inner-stroke hole-outer-stroke
 python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
   --cli ./cmake-build-debug/pagx --scales 1 --images 1 \
-  --names isolated-group pass-through clipping group-mask adjustment
+  --names clipping group-mask adjustment
 ```
 
 ### Paint 源模型与描边单位验证（2026-11-12）
@@ -250,4 +250,28 @@ python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-st
 python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
   --cli ./cmake-build-debug/pagx --scales 1 --images 1 \
   --names dash-overlap stroke-opacity gradient-classic gradient-linear gradient-perceptual
+```
+
+### 原生混合与组隔离（2026-11-12）
+
+19 项 C++ 和 27 项 Node 测试通过。Multiply、Screen、Darken、Lighten、Overlay、
+Hard Light、Exclusion 以及隔离组、穿透组共 9 个真实 Photoshop 样例完成 1×/4× 比较，
+均为 0 个 Image；三通道最大 MAE 为 0.427/255 以下，非边缘最大差小于 1.60/255。
+参考同时覆盖背景 alpha、图层 Opacity、Fill 和组透明度。
+Soft Light 的原生结果超出 MAE≤0.5 门槛，继续采集其背景范围；回退后 1× 验证通过。
+剪贴、像素组蒙版和调整层的局部回退回归也通过，仍保留范围外矢量。
+
+```js
+await require("./test/host-blends.js").run(folder);
+await require("./test/host-compositing.js").run(folder);
+```
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --report stage3-blends.json \
+  --names blend-multiply blend-screen blend-darken blend-lighten blend-overlay \
+          blend-hardlight blend-exclusion isolated-group pass-through
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --images 1 --scales 1 \
+  --names blend-softlight clipping group-mask adjustment
 ```

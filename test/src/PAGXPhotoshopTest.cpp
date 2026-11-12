@@ -220,6 +220,45 @@ PAGX_TEST(PAGXPhotoshopTest, LocalBackdropReplacementStopsAtAnIsolatedGroup) {
   EXPECT_EQ(outputGroup->children[1]->name, "above");
 }
 
+PAGX_TEST(PAGXPhotoshopTest, NativeBlendsKeepTheirIsolationAndCapturedClipsIncludeTheBackdrop) {
+  auto source = PSDocument();
+  auto multiply = NativeShape("multiply");
+  multiply.blendMode = "multiply";
+  auto group = Pixel("group");
+  group.kind = photoshop::LayerKind::Group;
+  group.children = {multiply};
+  group.blendMode = "passThrough";
+  source.layers = {NativeShape("backdrop"), group};
+  EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).rasters.empty());
+  auto output = pagx::PhotoshopImporter::Convert(source, {});
+  EXPECT_TRUE(output->layers[1]->passThroughBackground);
+  EXPECT_EQ(output->layers[1]->children[0]->blendMode, pagx::BlendMode::Multiply);
+  source.layers[1].blendMode = "normal";
+  source.layers[1].opacity = 0.5f;
+  output = pagx::PhotoshopImporter::Convert(source, {});
+  EXPECT_FALSE(output->layers[1]->passThroughBackground);
+  EXPECT_FLOAT_EQ(output->layers[1]->alpha, 0.5f);
+  auto clip = NativeShape("clipped");
+  clip.clippingBase = multiply.id;
+  source.layers = {NativeShape("backdrop"), multiply, clip, NativeShape("above")};
+  auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_FALSE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerIds,
+            (std::vector<std::string>{"backdrop", "multiply", "clipped"}));
+  group.children = {multiply, clip};
+  source.layers = {NativeShape("backdrop"), group, NativeShape("above")};
+  plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_TRUE(plan.rasters[0].parentId.empty());
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"backdrop", "group"}));
+  multiply.blendMode = "softLight";
+  source.layers = {NativeShape("backdrop"), multiply, NativeShape("above")};
+  plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerIds, (std::vector<std::string>{"backdrop", "multiply"}));
+}
+
 PAGX_TEST(PAGXPhotoshopTest, PassThroughDependenciesIncludeTheOutsideBackdrop) {
   auto source = PSDocument();
   auto group = Pixel("pass");

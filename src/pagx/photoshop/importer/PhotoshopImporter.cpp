@@ -100,10 +100,11 @@ class Builder {
       if (!item.visible) continue;
       auto layer = document->makeNode<Layer>("ps_layer_" + std::to_string(nextLayer++));
       layer->name = item.name;
+      layer->blendMode = NativePhotoshopBlendMode(item.blendMode).value_or(BlendMode::Normal);
       output.push_back(layer);
       if (IsPhotoshopGroup(item)) {
         layer->alpha = item.opacity;
-        layer->passThroughBackground = false;
+        layer->passThroughBackground = item.blendMode == "passThrough";
         addLayers(item.children, layer->children);
       } else if (IsNativePhotoshopLayer(item) && item.shape) {
         layer->x = -source.bounds.left;

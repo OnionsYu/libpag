@@ -6,11 +6,13 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "pagx/PhotoshopImporter.h"
+#include "pagx/types/BlendMode.h"
 
 namespace pagx {
 bool IsPhotoshopGroup(const photoshop::Layer& layer);
 bool IsNativePhotoshopLayer(const photoshop::Layer& layer);
 bool IsEmptyPhotoshopLayer(const photoshop::Layer& layer);
+std::optional<BlendMode> NativePhotoshopBlendMode(const std::string& mode);
 PhotoshopConversionPlan PlanPhotoshopComposition(const photoshop::Document& source,
                                                  bool forceComposite);
 }  // namespace pagx

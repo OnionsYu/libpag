@@ -1,7 +1,7 @@
 /* Copyright (C) 2026 Tencent. Licensed under the Apache License, Version 2.0. */
 "use strict";
 const ps = require("photoshop");
-const { shape, descriptor, action, write, baseline, exportFixture } = require("./host-vectors.js");
+const { shape, descriptor, action, write, baseline, baselineScales, exportFixture } = require("./host-vectors.js");
 
 async function run(folder) {
   for (const name of ["isolated-group", "pass-through", "clipping", "group-mask", "adjustment"]) {
@@ -38,12 +38,14 @@ async function run(folder) {
       }
       const foreground = await shape([190, 15, 245, 65], [200, 40, 180], "ellipse");
       foreground.name = "Unrelated vector above";
-      await baseline(doc, folder, name);
+      if (["isolated-group", "pass-through"].includes(name)) await baselineScales(doc, folder, name, context);
+      else await baseline(doc, folder, name);
       const file = await folder.createFile(`${name}.psd`, { overwrite: true });
       await doc.saveAs.psd(file, { embedColorProfile: true }, true);
     }, { commandName: "创建 PAGX 合成依赖样例", timeOut: 1 });
     const result = await exportFixture(folder, name);
-    if (result.composite || result.statistics.vectorShapes < 1 || result.captures.length !== 1)
+    const captures = ["isolated-group", "pass-through"].includes(name) ? 0 : 1;
+    if (result.composite || result.statistics.vectorShapes < 1 || result.captures.length !== captures)
       throw new Error(`${name}: unrelated vectors were collapsed or captures were duplicated`);
   }
   console.log("PAGX_COMPOSITING_FIXTURES_DONE");

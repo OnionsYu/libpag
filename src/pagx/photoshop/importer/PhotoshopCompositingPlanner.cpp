@@ -7,10 +7,21 @@
 
 #include "PhotoshopCompositingPlanner.h"
 #include <algorithm>
+#include <unordered_map>
 #include "PhotoshopPaintBuilder.h"
 #include "PhotoshopShapeBuilder.h"
 
 namespace pagx {
+std::optional<BlendMode> NativePhotoshopBlendMode(const std::string& mode) {
+  // The special Fill-opacity modes and nonseparable color modes need separate host qualification.
+  static const std::unordered_map<std::string, BlendMode> modes = {
+      {"normal", BlendMode::Normal},       {"multiply", BlendMode::Multiply},
+      {"screen", BlendMode::Screen},       {"darken", BlendMode::Darken},
+      {"lighten", BlendMode::Lighten},     {"overlay", BlendMode::Overlay},
+      {"hardLight", BlendMode::HardLight}, {"exclusion", BlendMode::Exclusion}};
+  auto found = modes.find(mode);
+  return found == modes.end() ? std::nullopt : std::optional<BlendMode>(found->second);
+}
 bool IsPhotoshopGroup(const photoshop::Layer& layer) {
   return layer.kind == photoshop::LayerKind::Group;
 }
@@ -43,14 +54,30 @@ bool EscapesIsolation(const Layers& layers, PhotoshopConversionPlan& plan) {
   }
   return escapes;
 }
-bool NeedsBackdrop(const photoshop::Layer& layer) {
+bool HasBackdropClipping(const Layers& layers) {
+  bool chainReadsBackdrop = false;
+  for (const auto& layer : layers) {
+    if (layer.clippingBase.empty()) chainReadsBackdrop = false;
+    chainReadsBackdrop |= layer.visible && layer.blendMode != "normal";
+    if (layer.visible && !layer.clippingBase.empty() && chainReadsBackdrop) return true;
+  }
+  return false;
+}
+bool NeedsRasterBackdrop(const photoshop::Layer& layer) {
   if (!layer.visible) return false;
   if (!layer.features.empty() || layer.kind == photoshop::LayerKind::Adjustment) return true;
   if (layer.blendMode == "normal") return false;
   if (IsPhotoshopGroup(layer) && layer.blendMode == "passThrough" && layer.opacity == 1 &&
       layer.fillOpacity == 1 && layer.rasterFeatures.empty()) {
-    return std::any_of(layer.children.begin(), layer.children.end(), NeedsBackdrop);
+    return HasBackdropClipping(layer.children) ||
+           std::any_of(layer.children.begin(), layer.children.end(), NeedsRasterBackdrop);
   }
+  // Reading the backdrop does not require rasterization when PAGX can perform that blend at
+  // the same isolation boundary. Unsupported content still captures its required backdrop.
+  if (NativePhotoshopBlendMode(layer.blendMode) &&
+      (IsNativePhotoshopLayer(layer) ||
+       (IsPhotoshopGroup(layer) && layer.fillOpacity == 1 && layer.rasterFeatures.empty())))
+    return false;
   return true;
 }
 struct Range {
@@ -64,7 +91,7 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
   for (size_t i = 0; i < layers.size(); ++i) {
     const auto& layer = layers[i];
     if (!layer.visible) continue;
-    if (NeedsBackdrop(layer)) {
+    if (NeedsRasterBackdrop(layer)) {
       ranges.push_back({0, i});
       plan.diagnostics.push_back({"backdrop-range", layer.id,
                                   "Render this layer together with its preceding backdrop inside "
@@ -72,6 +99,14 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
     } else if (!layer.clippingBase.empty()) {
       size_t first = 0;
       while (layers[first].id != layer.clippingBase) ++first;  // Validated preceding sibling.
+      // A captured clipping chain cannot retain a native blend on its base/children. Include
+      // their backdrop rather than baking onto transparency and losing the blend afterwards.
+      for (size_t j = first; j <= i; ++j) {
+        if (layers[j].visible && layers[j].blendMode != "normal") {
+          first = 0;
+          break;
+        }
+      }
       ranges.push_back({first, i});
       plan.diagnostics.push_back(
           {"clipping-range", layer.id,
