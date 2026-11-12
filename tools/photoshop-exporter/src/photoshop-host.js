@@ -130,7 +130,7 @@ class PhotoshopHost {
       resolution: doc.resolution, colorMode: doc.mode === constants.DocumentMode.RGB ? "RGB" : String(doc.mode),
       colorProfile: doc.colorProfileName, bitDepth,
       bounds: { left: 0, top: 0, width, height },
-      features: [], layers: await walk(doc.layers, 0) };
+      features: await reader.documentFeatures(), layers: await walk(doc.layers, 0) };
   }
 
   async prepareCaptures(document, source, plan) {

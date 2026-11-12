@@ -14,9 +14,13 @@
 #include "pagx/nodes/Image.h"
 #include "pagx/nodes/Path.h"
 #include "pagx/nodes/Stroke.h"
+#include "renderer/LayerBuilder.h"
 #include "renderer/ToTGFX.h"
 #include "tgfx/core/ImageCodec.h"
 #include "tgfx/core/Pixmap.h"
+#include "tgfx/core/Surface.h"
+#include "tgfx/layers/DisplayList.h"
+#include "tgfx/layers/Layer.h"
 #include "utils/TestUtils.h"
 
 namespace pag {
@@ -67,6 +71,75 @@ static photoshop::Layer NativeShape(const std::string& id) {
   shape.fill = photoshop::Color{0, 1, 0, 1};
   layer.shape = shape;
   return layer;
+}
+
+PAGX_TEST(PAGXPhotoshopTest, CompoundStrokeAlignmentSurvivesSerializationAtMultipleScales) {
+  DeviceLockScope deviceLock;
+  ASSERT_TRUE(static_cast<bool>(deviceLock));
+  for (bool booleanHole : {false, true}) {
+    for (const auto& alignment : {"inner", "outer"}) {
+      auto source = PSDocument();
+      source.bounds = {0, 0, 100, 100};
+      auto layer = NativeShape("compound");
+      auto outer = PSBox(10, 10, 90, 90);
+      auto hole = PSBox(30, 30, 70, 70);
+      if (booleanHole) {
+        hole.operation = photoshop::PathOperation::Subtract;
+        layer.shape->components = {outer, hole};
+      } else {
+        outer.subpaths.push_back(hole.subpaths.front());
+        layer.shape->components = {outer};
+      }
+      layer.shape->fill.reset();
+      layer.shape->stroke = photoshop::Stroke{};
+      layer.shape->stroke->width = 4;
+      layer.shape->stroke->align = alignment;
+      layer.shape->stroke->color = {1, 0, 0, 1};
+      source.layers = {layer};
+      auto converted = pagx::PhotoshopImporter::Convert(source, {});
+      auto xml = pagx::PAGXExporter::ToXML(*converted);
+      EXPECT_EQ(xml.find("<Image"), std::string::npos);
+      auto parsed = pagx::PAGXImporter::FromXML(xml);
+      ASSERT_NE(parsed, nullptr);
+      ASSERT_TRUE(parsed->errors.empty());
+      parsed->applyLayout();
+      for (int scale : {1, 4}) {
+        auto root = pagx::LayerBuilder::Build(parsed.get());
+        root->setMatrix(tgfx::Matrix::MakeScale(scale));
+        auto surface = tgfx::Surface::Make(deviceLock.context(), 100 * scale, 100 * scale);
+        ASSERT_NE(surface, nullptr);
+        tgfx::DisplayList display;
+        display.root()->addChild(root);
+        display.render(surface.get(), false);
+        std::vector<uint8_t> pixels(100 * 100 * scale * scale * 4);
+        ASSERT_TRUE(surface->readPixels(
+            tgfx::ImageInfo::Make(100 * scale, 100 * scale, tgfx::ColorType::RGBA_8888,
+                                  tgfx::AlphaType::Unpremultiplied),
+            pixels.data()));
+        for (int x : {5, 7, 9, 11, 13, 15, 25, 27, 29, 31, 33, 35, 50}) {
+          const bool inner = std::string(alignment) == "inner";
+          const bool painted = inner ? (x > 10 && x < 14) || (x > 26 && x < 30)
+                                     : (x > 6 && x < 10) || (x > 30 && x < 34);
+          const auto offset = ((50 * scale) * (100 * scale) + x * scale) * 4;
+          EXPECT_EQ(pixels[offset + 3], painted ? 255 : 0)
+              << "x=" << x << " scale=" << scale << " " << alignment << " boolean=" << booleanHole;
+        }
+      }
+    }
+  }
+}
+
+PAGX_TEST(PAGXPhotoshopTest, UnqualifiedDocumentCompositionBakesNormalVectorsOnce) {
+  auto source = PSDocument();
+  source.layers = {NativeShape("normal")};
+  source.features = {"compositing-environment:rgb-blend-gamma"};
+  auto plan = pagx::PhotoshopImporter::Analyze(source);
+  EXPECT_TRUE(plan.composite);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].id, "composite");
+  auto output = pagx::PhotoshopImporter::Convert(source, {Capture("composite")});
+  ASSERT_EQ(output->layers.size(), 1u);
+  EXPECT_FLOAT_EQ(output->layers[0]->alpha, 1);
 }
 
 PAGX_TEST(PAGXPhotoshopTest, LocalBackdropReplacementStopsAtAnIsolatedGroup) {

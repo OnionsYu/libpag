@@ -5,6 +5,20 @@ const assert = require("node:assert/strict");
 const { DescriptorReader, shape, pathComponents } = require("../src/descriptor-reader.js");
 const fixture = require("./fixtures/ps27-descriptors.json");
 
+test("RGB blending environment must be explicitly qualified, including normal layers", async () => {
+  for (const gamma of [false, true, 1, 2.2, undefined, "false"]) {
+    const reader = new DescriptorReader({ action: { async batchPlay([request]) {
+      assert.equal(request._target[0]._property, "colorSettings");
+      assert.equal(request._target[1]._ref, "application");
+      return [{ colorSettings: { RGBBlendGamma: gamma, TextBlendGamma: 1.45 } }];
+    } } }, { id: 1 }, "27.4.0");
+    assert.deepEqual(await reader.documentFeatures(), gamma === false ? [] :
+      ["compositing-environment:rgb-blend-gamma"]);
+  }
+  const reader = new DescriptorReader({}, { id: 1 }, "27.4.0");
+  assert.deepEqual(await reader.documentFeatures(), ["compositing-environment:unknown"]);
+});
+
 test("recorded Photoshop paths retain fractional geometry and absolute closing handles", () => {
   const ellipse = fixture.shapes.ellipse;
   const value = shape(ellipse.raw, ellipse.path);

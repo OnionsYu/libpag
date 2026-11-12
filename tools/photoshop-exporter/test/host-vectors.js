@@ -47,6 +47,41 @@ async function baseline(doc, folder, name) {
       components: data.components, level: result.level });
   } finally { result.imageData.dispose(); }
 }
+async function baselineScales(doc, folder, name, context) {
+  await baseline(doc, folder, name);
+  const scaled = await doc.duplicate(`${name} 4x reference`, false);
+  await context.hostControl.registerAutoCloseDocument(scaled.id);
+  try {
+    // Resize the layered document, so Photoshop rerenders paths and text at the new size.
+    // This is independent of PAGX and never resizes the already captured composite pixels.
+    const strokes = [];
+    const collect = async layers => {
+      for (const layer of layers) {
+        if (layer.kind === ps.constants.LayerKind.GROUP) await collect(layer.layers);
+        const raw = (await descriptor(scaled, layer)).value;
+        const style = raw.AGMStrokeStyleInfo;
+        if (style && style.strokeEnabled) strokes.push({ id: layer.id,
+          width: style.strokeStyleLineWidth._value * 4 });
+      }
+    };
+    await collect(scaled.layers);
+    await scaled.resizeImage(doc.width * 4, doc.height * 4, doc.resolution);
+    // PS leaves scale-unlocked vector strokes at their old width during Image Size.
+    // Set the independently specified reference width; keep Photoshop as the rasterizer.
+    for (const stroke of strokes) {
+      await action({ _obj: "set", _target: [{ _ref: "contentLayer", _id: stroke.id }],
+        to: { _obj: "shapeStyle", strokeStyle: { _obj: "strokeStyle", strokeStyleVersion: 2,
+          strokeStyleLineWidth: unit(stroke.width) } } });
+      const raw = await action({ _obj: "get", _target: [{ _ref: "layer", _id: stroke.id }] });
+      if (raw.AGMStrokeStyleInfo.strokeStyleLineWidth._value !== stroke.width)
+        throw new Error("Photoshop did not scale the reference stroke width");
+    }
+    await baseline(scaled, folder, `${name}.4x`);
+  } finally {
+    await scaled.close(ps.constants.SaveOptions.DONOTSAVECHANGES);
+    ps.app.activeDocument = doc;
+  }
+}
 async function probe(folder) {
   folder = folder || await uxp.storage.localFileSystem.getTemporaryFolder();
   await ps.core.executeAsModal(async context => {
@@ -66,7 +101,7 @@ async function probe(folder) {
     }
     const ellipse = await shape([120.5, 30.25, 230.5, 140.25], [20, 170, 220], "ellipse");
     const ellipseData = await descriptor(doc, ellipse);
-    await baseline(doc, folder, "shapes");
+    await baselineScales(doc, folder, "shapes", context);
     const file = await folder.createFile("shapes.psd", { overwrite: true });
     await doc.saveAs.psd(file, { embedColorProfile: true }, true);
     const text = await doc.createTextLayer({ name: "Text", contents: "PAGX 中文", fontSize: 24,
@@ -103,14 +138,14 @@ async function exportFixture(folder, name = "shapes") {
   return result;
 }
 async function geometryFixtures(folder) {
-  for (const name of ["hole", "stroke", "transformed"]) {
+  for (const name of ["hole", "stroke", "transformed", "hole-inner-stroke", "hole-outer-stroke"]) {
     await ps.core.executeAsModal(async context => {
       const doc = await ps.app.createDocument({ name, width: 256, height: 192, resolution: 72,
         mode: ps.constants.NewDocumentMode.RGB, fill: ps.constants.DocumentFill.TRANSPARENT,
         profile: "sRGB IEC61966-2.1" });
       await context.hostControl.registerAutoCloseDocument(doc.id);
       let layer = await shape([20.5, 20.25, 200.5, 140.25], [80, 150, 220]);
-      if (name === "hole") {
+      if (name.startsWith("hole")) {
         const paths = [[[20.5, 20.25], [200.5, 20.25], [200.5, 140.25], [20.5, 140.25]],
           [[60, 50], [160, 50], [160, 110], [60, 110]]].map((anchors, index) => {
           const path = new ps.app.SubPathInfo();
@@ -134,26 +169,28 @@ async function geometryFixtures(folder) {
         layer = doc.activeLayers[0];
         if ((await descriptor(doc, layer)).path.pathContents.pathComponents.length !== 2)
           throw new Error("Photoshop did not create the compound-path fixture");
-      } else if (name === "stroke") {
+      }
+      if (name.includes("stroke")) {
         await action({ _obj: "set", _target: [{ _ref: "contentLayer", _id: layer.id }],
           to: { _obj: "shapeStyle", strokeStyle: { _obj: "strokeStyle", strokeStyleVersion: 2,
             strokeEnabled: true, fillEnabled: true, strokeStyleLineWidth: unit(6),
             strokeStyleLineDashOffset: { _unit: "pointsUnit", _value: 0 }, strokeStyleMiterLimit: 4,
             strokeStyleLineCapType: { _enum: "strokeStyleLineCapType", _value: "strokeStyleRoundCap" },
             strokeStyleLineJoinType: { _enum: "strokeStyleLineJoinType", _value: "strokeStyleRoundJoin" },
-            strokeStyleLineAlignment: { _enum: "strokeStyleLineAlignment", _value: "strokeStyleAlignInside" },
+            strokeStyleLineAlignment: { _enum: "strokeStyleLineAlignment",
+              _value: name.includes("outer") ? "strokeStyleAlignOutside" : "strokeStyleAlignInside" },
             strokeStyleScaleLock: false, strokeStyleStrokeAdjust: false, strokeStyleLineDashSet: [],
             strokeStyleBlendMode: { _enum: "blendMode", _value: "normal" },
             strokeStyleOpacity: { _unit: "percentUnit", _value: 100 },
             strokeStyleContent: { _obj: "solidColorLayer", color: { _obj: "RGBColor", red: 240, grain: 40, blue: 20 } },
             strokeStyleResolution: 72 } } });
         layer.opacity = 75; layer.fillOpacity = 60;
-      } else {
+      } else if (name === "transformed") {
         await layer.rotate(17, ps.constants.AnchorPosition.MIDDLECENTER);
         await layer.translate(-25.5, 6.25);
       }
       await write(folder, `${name}.descriptor.json`, await descriptor(doc, layer));
-      await baseline(doc, folder, name);
+      await baselineScales(doc, folder, name, context);
       const file = await folder.createFile(`${name}.psd`, { overwrite: true });
       await doc.saveAs.psd(file, { embedColorProfile: true }, true);
     }, { commandName: "创建 PAGX 几何验证样例", timeOut: 1 });
@@ -173,15 +210,16 @@ async function textFixtures(folder) {
         fontName: "AdobeHeitiStd-Regular", fontSize: 32, position: { x: 16, y: 55 } });
       const state = await descriptor(doc, layer);
       await write(folder, `${name}.descriptor.json`, state);
-      await baseline(doc, folder, name);
+      await baselineScales(doc, folder, name, context);
       const file = await folder.createFile(`${name}.psd`, { overwrite: true });
       await doc.saveAs.psd(file, { embedColorProfile: true }, true);
       // A second oracle distinguishes Photoshop text hinting from path conversion errors.
       await layer.textItem.convertToShape();
-      await baseline(doc, folder, `${name}-outline`);
+      await baselineScales(doc, folder, `${name}-outline`, context);
     }, { commandName: "创建 PAGX 文字验证样例", timeOut: 1 });
     await exportFixture(folder, name);
   }
   console.log("PAGX_TEXT_FIXTURES_DONE");
 }
-module.exports = { probe, exportFixture, geometryFixtures, textFixtures, shape, descriptor, action, write, baseline };
+module.exports = { probe, exportFixture, geometryFixtures, textFixtures, shape, descriptor, action,
+  write, baseline, baselineScales };

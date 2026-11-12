@@ -6,6 +6,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "PhotoshopShapeBuilder.h"
+#include <algorithm>
 #include <stdexcept>
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Path.h"
@@ -41,6 +42,45 @@ SolidColor* MakeColor(PAGXDocument* document, const photoshop::Color& value) {
   auto color = document->makeNode<SolidColor>();
   color->color = {value.red, value.green, value.blue, value.alpha};
   return color;
+}
+Path* MakePath(PAGXDocument* document, const tgfx::Path& geometry) {
+  auto data = document->makeNode<PathData>();
+  for (const auto& segment : geometry) {
+    const auto* p = segment.points;
+    switch (segment.verb) {
+      case tgfx::PathVerb::Move:
+        data->moveTo(p[0].x, p[0].y);
+        break;
+      case tgfx::PathVerb::Line:
+        data->lineTo(p[1].x, p[1].y);
+        break;
+      case tgfx::PathVerb::Quad:
+        data->quadTo(p[1].x, p[1].y, p[2].x, p[2].y);
+        break;
+      case tgfx::PathVerb::Cubic:
+        data->cubicTo(p[1].x, p[1].y, p[2].x, p[2].y, p[3].x, p[3].y);
+        break;
+      case tgfx::PathVerb::Close:
+        data->close();
+        break;
+      case tgfx::PathVerb::Done:
+        break;
+      default:
+        throw std::runtime_error("Unexpected rational curve in Photoshop path");
+    }
+  }
+  auto path = document->makeNode<Path>();
+  path->data = data;
+  return path;
+}
+Fill* MakeFill(PAGXDocument* document, const tgfx::Path& geometry, const photoshop::Color& color,
+               float opacity) {
+  auto fill = document->makeNode<Fill>();
+  fill->alpha = opacity;
+  fill->color = MakeColor(document, color);
+  fill->fillRule =
+      geometry.getFillType() == tgfx::PathFillType::EvenOdd ? FillRule::EvenOdd : FillRule::Winding;
+  return fill;
 }
 }  // namespace
 
@@ -83,41 +123,10 @@ void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::
     }
     combined.addPath(MakeComponent(component), operation);
   }
-  auto data = document->makeNode<PathData>();
-  for (const auto& segment : combined) {
-    const auto* p = segment.points;
-    switch (segment.verb) {
-      case tgfx::PathVerb::Move:
-        data->moveTo(p[0].x, p[0].y);
-        break;
-      case tgfx::PathVerb::Line:
-        data->lineTo(p[1].x, p[1].y);
-        break;
-      case tgfx::PathVerb::Quad:
-        data->quadTo(p[1].x, p[1].y, p[2].x, p[2].y);
-        break;
-      case tgfx::PathVerb::Cubic:
-        data->cubicTo(p[1].x, p[1].y, p[2].x, p[2].y, p[3].x, p[3].y);
-        break;
-      case tgfx::PathVerb::Close:
-        data->close();
-        break;
-      case tgfx::PathVerb::Done:
-        break;
-      default:
-        throw std::runtime_error("Unexpected rational curve in Photoshop path");
-    }
-  }
-  auto path = document->makeNode<Path>();
-  path->data = data;
+  auto path = MakePath(document, combined);
   layer->contents.push_back(path);
   if (shape.fill) {
-    auto fill = document->makeNode<Fill>();
-    fill->alpha = fillOpacity;
-    fill->color = MakeColor(document, *shape.fill);
-    fill->fillRule = combined.getFillType() == tgfx::PathFillType::EvenOdd ? FillRule::EvenOdd
-                                                                           : FillRule::Winding;
-    layer->contents.push_back(fill);
+    layer->contents.push_back(MakeFill(document, combined, *shape.fill, fillOpacity));
   }
   if (shape.stroke) {
     const auto& value = *shape.stroke;
@@ -138,7 +147,36 @@ void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::
     stroke->placement = LayerPlacement::Foreground;
     stroke->dashes = value.dashes;
     stroke->dashOffset = value.dashOffset;
-    layer->contents.push_back(stroke);
+    if (stroke->align != StrokeAlign::Center &&
+        combined.getFillType() == tgfx::PathFillType::EvenOdd) {
+      // PAGX Fill owns the fill rule; PathData and Stroke do not. Clip a doubled centered
+      // stroke with an explicit vector fill so holes, overlaps and self-intersections keep
+      // their original inside/outside meaning. Do not reverse contours heuristically.
+      auto clip = combined;
+      if (stroke->align == StrokeAlign::Outside) {
+        // A finite complement only needs to contain the complete stroked footprint.
+        auto bounds = combined.getBounds();
+        bounds.outset(value.width * std::max(2.0f, value.miterLimit * 2) + 1,
+                      value.width * std::max(2.0f, value.miterLimit * 2) + 1);
+        clip = tgfx::Path();
+        clip.addRect(bounds);
+        clip.addPath(combined, tgfx::PathOp::Difference);
+      }
+      auto mask = document->makeNode<Layer>(layer->id + "_stroke_mask");
+      mask->visible = false;
+      mask->contents = {MakePath(document, clip), MakeFill(document, clip, {1, 1, 1, 1}, 1)};
+      auto outline = document->makeNode<Layer>();
+      outline->mask = mask;
+      outline->maskType = MaskType::Contour;
+      auto strokePath = document->makeNode<Path>();
+      strokePath->data = path->data;
+      outline->contents = {strokePath, stroke};
+      stroke->width *= 2;
+      stroke->align = StrokeAlign::Center;
+      layer->children = {mask, outline};
+    } else {
+      layer->contents.push_back(stroke);
+    }
   }
 }
 }  // namespace pagx

@@ -183,8 +183,9 @@ python3 tools/photoshop-exporter/test/verify-vectors.py /path/to/fixture-folder 
   --report text-replay-verification.json
 ```
 
-4 个形状样例和 2 个文字样例重放通过，均为 0 个 Image，完成 1×/4× 渲染及上述独立
-基准比较；形状 alpha MAE 最大 0.314/255，轮廓文字为 0.086/255 以下。原始文字与
+4 个形状样例和 2 个文字样例重放通过，均为 0 个 Image；当时完成 1× 独立基准比较及
+4× 渲染，**没有 4× 独立基准比较**。形状 alpha MAE 最大 0.314/255，轮廓文字为
+0.086/255 以下。原始文字与
 轮廓之间的差异仍按文字阶段说明，不因重放通过而消失。开发验证产物归档于
 `.tmp/photoshop-vector-validation/`（不进入 Git 或插件包）。
 
@@ -193,3 +194,29 @@ macOS arm64 原生模块已重建并通过 ad-hoc 签名检查，开发 CCX 已�
 及新增局部合成场景尚未完成宿主验收**，不得将本段构建和重放结果解释为已通过完整
 Photoshop 回归。渐变、独立蒙版语义、可编辑文字仍未原生映射；使用已说明的局部/整图
 回退或明确拒绝，不能宣称任意 PSD 都输出纯矢量。
+
+### 正确性修复与真实宿主回归（2026-11-12）
+
+第一阶段修复复合路径 EvenOdd 规则在内外描边中丢失的问题，增加 RGB 混合 gamma
+门禁。17 项 C++ 测试、25 项 Node 测试通过；C++ 像素测试覆盖直接 EvenOdd 孔洞与
+减法孔洞、内/外描边、XML 往返及 1×/4×。
+
+已在 Photoshop 27.4 重新加载重建的 arm64 模块，完成 5 个几何样例的 1×/4× 独立
+像素比较（含孔洞内外描边），均为 0 个 Image；最大 alpha MAE 为 0.362/255，
+非边缘误差不超过 1/255。4× 参考来自分层文档副本重新缩放渲染，明确修正 Photoshop
+保留未锁定描边宽度的行为，并校验最终宽度；不是对 1× 合成图插值。
+5 个合成样例（隔离组、穿透组、剪贴、组蒙版、调整层）完成协议 2 的真实导出和
+1× 像素比较，均只采集一个范围、保留无关矢量，非边缘误差不超过 1/255。
+报告随 PAGX 一起发布。生成物及比较报告在 `.tmp/photoshop-vector-stage1/`。
+
+`verify-vectors.py` 默认要求 1× 和 4× 独立参考，缺少任意参考即失败；旧版仅有 1× 的
+档案和含回退位图的样例必须明确传 `--scales 1`。用 `--cli` 指定本轮构建的可执行文件：
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx \
+  --names hole stroke transformed hole-inner-stroke hole-outer-stroke
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --scales 1 --images 1 \
+  --names isolated-group pass-through clipping group-mask adjustment
+```

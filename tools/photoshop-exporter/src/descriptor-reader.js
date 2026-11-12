@@ -88,6 +88,19 @@ class DescriptorReader {
     return result;
   }
   target(id) { return [{ _ref: "layer", _id: id }, { _ref: "document", _id: this.doc.id }]; }
+  async documentFeatures() {
+    // RGB blend gamma is application state, absent from both layer get and document JSON.
+    // Only the observed disabled value is qualified. An unavailable setting is not a default.
+    try {
+      if (!/^27\.4(?:\.|$)/.test(this.hostVersion || "")) throw new Error("unknown host");
+      const result = await this.get([{ _property: "colorSettings" },
+        { _ref: "application", _enum: "ordinal", _value: "targetEnum" }]);
+      if (result.colorSettings && result.colorSettings.RGBBlendGamma === false) return [];
+      return ["compositing-environment:rgb-blend-gamma"];
+    } catch (_) {
+      return ["compositing-environment:unknown"];
+    }
+  }
   async init() {
     // The action JSON property includes advanced blend settings that ordinary layer 'get' omits.
     // Missing fields mean defaults only within this qualified host / JSON contract.

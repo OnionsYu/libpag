@@ -193,6 +193,7 @@ test("snapshot preserves the UXP host version and handles nested empty Photoshop
   const host = new PhotoshopHost({ constants }, 10000, "27.4.0");
   const snapshot = await host.snapshot({ doc, sourceName: "input.psd" });
   assert.equal(snapshot.hostVersion, "27.4.0");
+  assert.deepEqual(snapshot.features, ["compositing-environment:unknown"]);
   assert.deepEqual(snapshot.layers.map(layer => layer.id), ["ps:1", "ps:3"]);
   assert.deepEqual(snapshot.layers[0].bounds, { left: 0, top: 0, width: 0, height: 0 });
   assert.deepEqual(snapshot.layers[0].children[0].bounds, snapshot.layers[0].bounds);

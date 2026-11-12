@@ -24,6 +24,14 @@ Fill 透明度作用于填充，图层 Opacity 作用于填充与描边的组合
 宿主适配器使用 action `json` 属性读取高级混合信息，并以普通 layer/path 描述符读取
 像素单位、蒙版、纯色和描边。普通 layer get 会漏掉非默认高级混合属性。仅在实测的
 Photoshop 27.4 / JSON 1.6.1 契约内把缺失的高级混合属性解释为默认；其他情况仍是未知。
+另读 application `colorSettings.RGBBlendGamma`，只有实测的 `false` 才通过矢量门禁。
+启用、缺字段或读取失败均写入文档 `features` 并回退整图；不能因图层是 Normal 就忽略
+全局混合环境。此查询不修改用户颜色设置。
+
+PAGX 的填充规则属于 Fill，不属于 PathData。EvenOdd 形状的内外描边因此使用双倍宽度
+的居中 Stroke 和独立矢量 Contour 蒙版；外描边使用包围完整描边范围的有限补集。
+蒙版不携带源 Fill/Opacity，填充、描边透明度和最终图层透明度各自只应用一次。
+这一构造保持贝塞尔路径与描边参数，不以猜测轮廓方向消除孔洞。
 
 ## 分析和采集
 
