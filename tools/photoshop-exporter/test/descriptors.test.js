@@ -4,6 +4,32 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { DescriptorReader, shape, pathComponents } = require("../src/descriptor-reader.js");
 const fixture = require("./fixtures/ps27-descriptors.json");
+const appearance = require("./fixtures/ps27-appearance.json");
+
+test("recorded dash units and independent stroke opacity become pixel-space v3 paints", () => {
+  const dash = shape(appearance.dash.value, appearance.dash.path);
+  assert.deepEqual(dash.stroke.dashes, [3, 2]);
+  assert.equal(dash.stroke.dashOffset, 1);
+  const highResolution = structuredClone(appearance.dash);
+  highResolution.value.AGMStrokeStyleInfo.strokeStyleResolution = 300;
+  assert.deepEqual(shape(highResolution.value, highResolution.path).stroke.dashes, [12.5, 25 / 3]);
+  assert.equal(dash.stroke.paint.kind, "solid");
+  const translucent = shape(appearance["stroke-opacity"].value, appearance["stroke-opacity"].path);
+  assert.equal(translucent.stroke.opacity, 89 / 255); // Photoshop quantizes 35% to an 8-bit value.
+});
+
+test("gradient source retains interpolation, separate stop streams and document coordinates", () => {
+  for (const method of ["classic", "linear", "perceptual"]) {
+    const raw = appearance[`gradient-${method}`];
+    const value = shape(raw.value, raw.path).fill;
+    assert.equal(value.kind, "gradient");
+    assert.equal(value.gradient.interpolation, method);
+    assert.deepEqual(value.gradient.matrix.map(v => v || 0), [200, 0, 0, 200, 20, 90]);
+    assert.deepEqual(value.gradient.opacity.map(stop => stop.opacity), [1, 1]);
+    assert.equal(value.gradient.colors[0].midpoint, 0.5);
+    assert.equal(value.gradient.smoothness, 1);
+  }
+});
 
 test("RGB blending environment must be explicitly qualified, including normal layers", async () => {
   for (const gamma of [false, true, 1, 2.2, undefined, "false"]) {
@@ -26,7 +52,7 @@ test("recorded Photoshop paths retain fractional geometry and absolute closing h
   assert.deepEqual(points[0].anchor, { x: 175.5, y: 30.25 });
   assert.deepEqual(points[0].incoming, { x: 145.124347, y: 30.25 });
   assert.deepEqual(points[3].outgoing, { x: 120.5, y: 54.874347 });
-  assert.equal(value.fill.blue, ellipse.raw.adjustment[0].color.blue / 255);
+  assert.equal(value.fill.color.blue, ellipse.raw.adjustment[0].color.blue / 255);
   assert.equal(value.components[0].winding, false);
 });
 

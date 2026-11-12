@@ -7,6 +7,7 @@
 
 #include "PhotoshopCompositingPlanner.h"
 #include <algorithm>
+#include "PhotoshopPaintBuilder.h"
 #include "PhotoshopShapeBuilder.h"
 
 namespace pagx {
@@ -15,7 +16,8 @@ bool IsPhotoshopGroup(const photoshop::Layer& layer) {
 }
 bool IsNativePhotoshopLayer(const photoshop::Layer& layer) {
   return layer.rasterFeatures.empty() &&
-         (layer.rectangle || (layer.shape && CanBuildShape(*layer.shape)));
+         (layer.rectangle || (layer.shape && CanBuildShape(*layer.shape)) ||
+          (layer.fill && CanBuildPhotoshopPaint(*layer.fill)));
 }
 bool IsEmptyPhotoshopLayer(const photoshop::Layer& layer) {
   return layer.kind == photoshop::LayerKind::Pixel && layer.bounds.width == 0 &&
@@ -115,6 +117,11 @@ void AnalyzeSiblings(const Layers& layers, const std::string& parentId,
       } else {
         plan.statistics.fallbackScopes++;
         std::string reason = "Photoshop renders this isolated content.";
+        if (layer.shape && !CanBuildShape(*layer.shape))
+          reason +=
+              " Path operations, paint or stroke semantics are not qualified for native output.";
+        if (layer.fill && !CanBuildPhotoshopPaint(*layer.fill))
+          reason += " The fill paint is not qualified for native output.";
         for (const auto& feature : layer.rasterFeatures) reason += " " + feature;
         plan.diagnostics.push_back({"rasterized-content", layer.id, reason});
       }

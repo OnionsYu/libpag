@@ -28,6 +28,34 @@ void CheckColor(const Color& color) {
   Require(Unit(color.red) && Unit(color.green) && Unit(color.blue) && Unit(color.alpha),
           "invalid color");
 }
+void CheckPaint(const Paint& paint) {
+  CheckColor(paint.color);
+  if (!paint.gradient) return;
+  const auto& gradient = *paint.gradient;
+  Require(!gradient.type.empty() && !gradient.interpolation.empty() && Unit(gradient.smoothness),
+          "invalid gradient metadata");
+  for (float value : gradient.matrix) Require(std::isfinite(value), "invalid paint transform");
+  const auto& m = gradient.matrix;
+  const double determinant = static_cast<double>(m[0]) * m[3] - static_cast<double>(m[1]) * m[2];
+  Require(determinant != 0 && std::isfinite(determinant), "singular paint transform");
+  Require(!gradient.colors.empty() && gradient.colors.size() <= 1024 && !gradient.opacity.empty() &&
+              gradient.opacity.size() <= 1024,
+          "invalid gradient stops");
+  float previous = -1;
+  for (const auto& stop : gradient.colors) {
+    Require(Unit(stop.position) && stop.position >= previous && Unit(stop.midpoint),
+            "invalid gradient color stop");
+    CheckColor(stop.color);
+    previous = stop.position;
+  }
+  previous = -1;
+  for (const auto& stop : gradient.opacity) {
+    Require(Unit(stop.position) && stop.position >= previous && Unit(stop.midpoint) &&
+                Unit(stop.opacity),
+            "invalid gradient opacity stop");
+    previous = stop.position;
+  }
+}
 void CheckShape(const Shape& shape, size_t& pointCount) {
   Require(!shape.components.empty() && shape.components.size() <= 100000,
           "invalid path components");
@@ -49,10 +77,10 @@ void CheckShape(const Shape& shape, size_t& pointCount) {
       }
     }
   }
-  if (shape.fill) CheckColor(*shape.fill);
+  if (shape.fill) CheckPaint(*shape.fill);
   if (shape.stroke) {
     const auto& stroke = *shape.stroke;
-    CheckColor(stroke.color);
+    CheckPaint(stroke.paint);
     Require(std::isfinite(stroke.width) && stroke.width >= 0 && Unit(stroke.opacity) &&
                 std::isfinite(stroke.miterLimit) && stroke.miterLimit >= 1 &&
                 std::isfinite(stroke.dashOffset),
@@ -95,6 +123,14 @@ void CheckLayers(const std::vector<Layer>& layers, size_t depth,
                   (layer.kind == LayerKind::Shape || layer.kind == LayerKind::Text),
               "invalid shape owner or schema");
       CheckShape(*layer.shape, pointCount);
+      Require(version >= 3 || ((!layer.shape->fill || !layer.shape->fill->gradient) &&
+                               (!layer.shape->stroke || !layer.shape->stroke->paint.gradient)),
+              "v3 paint in legacy snapshot");
+    }
+    if (layer.fill) {
+      Require(version >= 3 && layer.kind == LayerKind::Fill && !layer.shape && !layer.rectangle,
+              "invalid fill owner or schema");
+      CheckPaint(*layer.fill);
     }
     Require(version >= 2 || layer.rasterFeatures.empty(), "v2 appearance in v1 snapshot");
     CheckLayers(layer.children, depth + 1, ids, pointCount, version);
@@ -112,7 +148,7 @@ void CheckClipping(const std::vector<Layer>& layers) {
 }  // namespace
 
 void Validate(const Document& document) {
-  Require(document.schemaVersion == 1 || document.schemaVersion == 2, "unsupported schema version");
+  Require(document.schemaVersion >= 1 && document.schemaVersion <= 3, "unsupported schema version");
   CheckRect(document.bounds);
   Require(document.bounds.width > 0 && document.bounds.height > 0, "empty export canvas");
   Require(std::isfinite(document.resolution) && document.resolution > 0, "invalid resolution");

@@ -6,6 +6,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include "pagx/PAGXExporter.h"
 #include "pagx/PAGXImporter.h"
@@ -13,6 +14,7 @@
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Image.h"
 #include "pagx/nodes/Path.h"
+#include "pagx/nodes/Rectangle.h"
 #include "pagx/nodes/Stroke.h"
 #include "renderer/LayerBuilder.h"
 #include "renderer/ToTGFX.h"
@@ -73,6 +75,58 @@ static photoshop::Layer NativeShape(const std::string& id) {
   return layer;
 }
 
+PAGX_TEST(PAGXPhotoshopTest, VersionedPaintRetainsSourceSemanticsAndFillsTheExportRectangle) {
+  const std::string text = R"({"schemaVersion":3,"name":"fill","hostVersion":"27.4.0",
+    "resolution":72,"colorMode":"RGB","colorProfile":"sRGB IEC61966-2.1","bitDepth":8,
+    "bounds":{"left":-10,"top":-20,"width":200,"height":100},"features":[],"layers":[{
+    "id":"fill","sourceLayerId":1,"name":"fill","kind":"fill","visible":true,
+    "opacity":0.75,"fillOpacity":0.6,"blendMode":"normal","compositingKnown":true,
+    "clippingBase":"","features":[],"rasterFeatures":[],"text":"","children":[],
+    "bounds":{"left":50,"top":60,"width":2,"height":3},
+    "fill":{"kind":"solid","color":{"red":1,"green":0,"blue":0,"alpha":1}}}]})";
+  auto source = photoshop::ParseSnapshot(text);
+  EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).rasters.empty());
+  auto output = pagx::PhotoshopImporter::Convert(source, {});
+  auto layer = output->layers.front();
+  auto rect = static_cast<pagx::Rectangle*>(layer->contents[0]);
+  EXPECT_FLOAT_EQ(layer->x + rect->position.x - rect->size.width / 2, 0);
+  EXPECT_FLOAT_EQ(layer->y + rect->position.y - rect->size.height / 2, 0);
+  EXPECT_FLOAT_EQ(rect->size.width, 200);
+  EXPECT_FLOAT_EQ(rect->size.height, 100);
+  EXPECT_FLOAT_EQ(layer->alpha, 0.75);
+  EXPECT_FLOAT_EQ(static_cast<pagx::Fill*>(layer->contents[1])->alpha, 0.6);
+  auto json = nlohmann::json::parse(text);
+  json["schemaVersion"] = 2;
+  EXPECT_THROW(photoshop::ParseSnapshot(json.dump()), std::invalid_argument);
+  json["schemaVersion"] = 3;
+  json["layers"][0]["fill"]["kind"] = "future";
+  EXPECT_THROW(photoshop::ParseSnapshot(json.dump()), std::invalid_argument);
+  photoshop::Gradient gradient;
+  gradient.interpolation = "perceptual";
+  gradient.colors = {{0, 0.5f, {1, 0, 0, 1}}, {1, 0.5f, {0, 0, 1, 1}}};
+  gradient.opacity = {{0, 0.3f, 1}, {1, 0.5f, 0}};
+  source.layers[0].fill->gradient = gradient;
+  auto plan = pagx::PhotoshopImporter::Analyze(source);
+  ASSERT_EQ(plan.rasters.size(), 1u);
+  EXPECT_EQ(plan.rasters[0].layerId, "fill");
+  source.layers[0].fill->gradient->matrix = {0, 0, 0, 0, 0, 0};
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+  source.layers[0].fill->gradient = gradient;
+  source.layers[0].fill->gradient->colors[1].position = -1;
+  EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
+  source.layers = {NativeShape("stroke-opacity")};
+  source.layers[0].shape->stroke = photoshop::Stroke{};
+  source.layers[0].shape->stroke->opacity = 89.0f / 255;
+  EXPECT_EQ(pagx::PhotoshopImporter::Analyze(source).rasters.size(), 1u);
+  source.layers[0].shape->stroke->opacity = 1;
+  source.layers[0].shape->stroke->cap = "round";
+  source.layers[0].shape->stroke->width = 6;
+  source.layers[0].shape->stroke->dashes = {3, 2};
+  EXPECT_EQ(pagx::PhotoshopImporter::Analyze(source).rasters.size(), 1u);
+  source.layers[0].shape->stroke->dashes = {12, 8};
+  EXPECT_TRUE(pagx::PhotoshopImporter::Analyze(source).rasters.empty());
+}
+
 PAGX_TEST(PAGXPhotoshopTest, CompoundStrokeAlignmentSurvivesSerializationAtMultipleScales) {
   DeviceLockScope deviceLock;
   ASSERT_TRUE(static_cast<bool>(deviceLock));
@@ -94,7 +148,7 @@ PAGX_TEST(PAGXPhotoshopTest, CompoundStrokeAlignmentSurvivesSerializationAtMulti
       layer.shape->stroke = photoshop::Stroke{};
       layer.shape->stroke->width = 4;
       layer.shape->stroke->align = alignment;
-      layer.shape->stroke->color = {1, 0, 0, 1};
+      layer.shape->stroke->paint = photoshop::Color{1, 0, 0, 1};
       source.layers = {layer};
       auto converted = pagx::PhotoshopImporter::Convert(source, {});
       auto xml = pagx::PAGXExporter::ToXML(*converted);
@@ -423,7 +477,7 @@ PAGX_TEST(PAGXPhotoshopTest, RejectsMalformedSourceAndCaptureContracts) {
   asset = Capture("layer:one");
   asset.png.resize(7);
   EXPECT_THROW(pagx::PhotoshopImporter::Convert(source, {asset}), std::invalid_argument);
-  source.schemaVersion = 3;
+  source.schemaVersion = 4;
   EXPECT_THROW(pagx::PhotoshopImporter::Analyze(source), std::invalid_argument);
 }
 
@@ -462,7 +516,7 @@ PAGX_TEST(PAGXPhotoshopTest, ParsesVersionedSnapshotAndRejectsAmbiguousInput) {
   EXPECT_FLOAT_EQ(source.bounds.width, 200);
   EXPECT_TRUE(source.layers.empty());
   auto future = json;
-  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":3");
+  future.replace(future.find("\"schemaVersion\":1"), 17, "\"schemaVersion\":4");
   EXPECT_THROW(photoshop::ParseSnapshot(future), std::invalid_argument);
   auto fractional = json;
   fractional.replace(fractional.find("\"bitDepth\":8"), 12, "\"bitDepth\":8.5");

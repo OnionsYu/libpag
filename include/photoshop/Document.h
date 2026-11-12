@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -69,8 +70,37 @@ struct Color {
   float blue = 0;
   float alpha = 1;
 };
-struct Stroke {
+struct ColorStop {
+  float position = 0;
+  float midpoint = 0.5f;
   Color color = {};
+};
+struct OpacityStop {
+  float position = 0;
+  float midpoint = 0.5f;
+  float opacity = 1;
+};
+struct Gradient {
+  std::string type = "linear";
+  std::string interpolation = "classic";
+  float smoothness = 1;
+  bool reverse = false;
+  bool dither = false;
+  // Unit-gradient to document-pixel affine transform [a, b, c, d, tx, ty].
+  // Linear gradients run from (0, 0) to (1, 0). It is never fitted to raster bounds.
+  std::array<float, 6> matrix = {1, 0, 0, 1, 0, 0};
+  std::vector<ColorStop> colors = {};
+  std::vector<OpacityStop> opacity = {};
+};
+struct Paint {
+  Color color = {};
+  std::optional<Gradient> gradient = {};
+  Paint() = default;
+  Paint(const Color& value) : color(value) {
+  }  // NOLINT(google-explicit-constructor)
+};
+struct Stroke {
+  Paint paint = {};
   float width = 1;
   float opacity = 1;
   float miterLimit = 4;
@@ -84,7 +114,7 @@ struct Stroke {
 // the live-shape origin transform or infer geometry from the raster bounds.
 struct Shape {
   std::vector<PathComponent> components = {};
-  std::optional<Color> fill = {};
+  std::optional<Paint> fill = {};
   std::optional<Stroke> stroke = {};
 };
 
@@ -109,11 +139,13 @@ struct Layer {
   std::string text = {};
   std::optional<SolidRectangle> rectangle = {};
   std::optional<Shape> shape = {};
+  // Unmasked fill layers cover the explicit document export rectangle, not layer.bounds.
+  std::optional<Paint> fill = {};
   std::vector<Layer> children = {};
 };
 
 struct Document {
-  int schemaVersion = 2;
+  int schemaVersion = 3;
   std::string name = {};
   std::string hostVersion = {};
   float resolution = 72;

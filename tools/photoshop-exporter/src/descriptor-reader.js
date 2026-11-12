@@ -22,6 +22,47 @@ function color(value) {
 function point(value) {
   return { x: unit(value.horizontal, "pixelsUnit"), y: unit(value.vertical, "pixelsUnit") };
 }
+function paint(value, raw, documentBounds) {
+  if (value && value._obj === "solidColorLayer") return { kind: "solid", color: color(value.color) };
+  if (!value || value._obj !== "gradientLayer" || !value.gradient ||
+      value.gradient.gradientForm._value !== "customStops" || value.type._value !== "linear")
+    throw new Error("未支持的绘制类型");
+  const source = value.gradient;
+  const boolean = (key, fallback) => {
+    if (value[key] === undefined) return fallback;
+    if (typeof value[key] !== "boolean") throw new Error(`未知渐变标志：${key}`);
+    return value[key];
+  };
+  const aligned = boolean("align", true);
+  const bounds = aligned && raw.hasVectorMask ? raw.pathBounds && raw.pathBounds.pathBounds : documentBounds;
+  if (!bounds) throw new Error("缺少渐变参考矩形");
+  const left = number(bounds.left, "left"), top = number(bounds.top, "top");
+  const width = number(bounds.right, "right") - left, height = number(bounds.bottom, "bottom") - top;
+  const angle = value.angle ? unit(value.angle, "angleUnit") * Math.PI / 180 : 0;
+  const scale = value.scale ? unit(value.scale, "percentUnit") / 100 : 1;
+  const x = Math.cos(angle), y = -Math.sin(angle);
+  const length = (Math.abs(width * x) + Math.abs(height * y)) * scale;
+  if (!(width > 0 && height > 0 && length > 0)) throw new Error("无效渐变范围");
+  const offset = value.offset || { horizontal: { _unit: "percentUnit", _value: 0 },
+    vertical: { _unit: "percentUnit", _value: 0 } };
+  const cx = left + width * (0.5 + unit(offset.horizontal, "percentUnit") / 100);
+  const cy = top + height * (0.5 + unit(offset.vertical, "percentUnit") / 100);
+  if (!Array.isArray(source.colors) || !source.colors.length || !Array.isArray(source.transparency) ||
+      !source.transparency.length) throw new Error("缺少渐变标记");
+  return { kind: "gradient", gradient: {
+    type: value.type._value, interpolation: value.gradientsInterpolationMethod._value,
+    smoothness: number(source.interfaceIconFrameDimmed, "smoothness") / 4096,
+    reverse: boolean("reverse", false), dither: boolean("dither", false),
+    matrix: [x * length, y * length, -y * length, x * length, cx - x * length / 2, cy - y * length / 2],
+    colors: source.colors.map(stop => {
+      if (stop.type._value !== "userStop") throw new Error("动态渐变颜色尚未解析");
+      return { position: number(stop.location, "location") / 4096,
+        midpoint: number(stop.midpoint, "midpoint") / 100, color: color(stop.color) };
+    }),
+    opacity: source.transparency.map(stop => ({ position: number(stop.location, "location") / 4096,
+      midpoint: number(stop.midpoint, "midpoint") / 100, opacity: unit(stop.opacity, "percentUnit") / 100 }))
+  } };
+}
 function pathComponents(value) {
   const components = value && value.pathContents && value.pathContents.pathComponents;
   if (!Array.isArray(components) || !components.length) throw new Error("缺少矢量路径");
@@ -42,7 +83,7 @@ function pathComponents(value) {
       }) };
   });
 }
-function shape(raw, path) {
+function shape(raw, path, documentBounds) {
   if (!raw.hasVectorMask || raw.vectorMaskEnabled !== true || raw.vectorMaskDensity !== 255 ||
       raw.vectorMaskFeather !== 0 || raw.vectorMaskEmpty !== false || raw.useAlignedRendering !== false)
     throw new Error("矢量蒙版或像素对齐需要 Photoshop 渲染");
@@ -51,13 +92,13 @@ function shape(raw, path) {
   const fillEnabled = style ? style.fillEnabled : raw.fillEnabled;
   if (typeof fillEnabled !== "boolean") throw new Error("未知形状填充状态");
   if (fillEnabled) {
-    if (!Array.isArray(raw.adjustment) || raw.adjustment.length !== 1 || raw.adjustment[0]._obj !== "solidColorLayer")
+    if (!Array.isArray(raw.adjustment) || raw.adjustment.length !== 1)
       throw new Error("形状填充需要 Photoshop 渲染");
-    value.fill = color(raw.adjustment[0].color);
+    value.fill = paint(raw.adjustment[0], raw, documentBounds);
   }
   if (style && style.strokeEnabled) {
     if (style.strokeStyleVersion !== 2 || style.strokeStyleBlendMode._value !== "normal" ||
-        style.strokeStyleStrokeAdjust !== false || style.strokeStyleContent._obj !== "solidColorLayer")
+        style.strokeStyleStrokeAdjust !== false)
       throw new Error("描边样式需要 Photoshop 渲染");
     const caps = { strokeStyleButtCap: "butt", strokeStyleRoundCap: "round", strokeStyleSquareCap: "square" };
     const joins = { strokeStyleMiterJoin: "miter", strokeStyleRoundJoin: "round", strokeStyleBevelJoin: "bevel" };
@@ -66,15 +107,18 @@ function shape(raw, path) {
     const align = aligns[style.strokeStyleLineAlignment._value];
     if (!cap || !join || !align) throw new Error("未知描边枚举");
     const width = unit(style.strokeStyleLineWidth, "pixelsUnit");
-    // Photoshop's dash values are multiples of stroke width, despite their pointsUnit label.
-    // Dashed strokes remain a host render until a host fixture qualifies that convention.
-    if (style.strokeStyleLineDashSet.length) throw new Error("虚线描边尚未验证");
-    if (unit(style.strokeStyleOpacity, "percentUnit") !== 100)
-      throw new Error("非默认描边透明度需要 Photoshop 渲染");
-    value.stroke = { color: color(style.strokeStyleContent.color), width,
+    // The action descriptor stores actual points, even though the Photoshop UI presents
+    // width multiples. Recorded 72/300 PPI references qualify resolution / 72 here.
+    if (!Array.isArray(style.strokeStyleLineDashSet)) throw new Error("缺少虚线样式");
+    const pointsToPixels = number(style.strokeStyleResolution, "stroke resolution") / 72;
+    if (!(pointsToPixels > 0)) throw new Error("无效描边分辨率");
+    const dashes = style.strokeStyleLineDashSet.map(value => unit(value, "pointsUnit") * pointsToPixels);
+    if (dashes.some(value => value < 0) || (dashes.length && !dashes.some(value => value > 0)))
+      throw new Error("无效虚线长度");
+    value.stroke = { paint: paint(style.strokeStyleContent, raw, documentBounds), width,
       opacity: unit(style.strokeStyleOpacity, "percentUnit") / 100,
       miterLimit: number(style.strokeStyleMiterLimit, "miterLimit"), cap, join, align,
-      dashes: [], dashOffset: 0 };
+      dashes, dashOffset: unit(style.strokeStyleLineDashOffset, "pointsUnit") * pointsToPixels };
   }
   return value;
 }
@@ -143,13 +187,19 @@ class DescriptorReader {
         else source.rasterFeatures.push(result.reason);
       }
     }
-    if (source.kind === "fill" && raw.hasVectorMask) {
-      source.kind = "shape";
+    if (source.kind === "fill") {
+      const bounds = { left: 0, top: 0, right: this.doc.width, bottom: this.doc.height };
       try {
-        source.shape = shape(raw, await this.get([
-          { _ref: "path", _enum: "path", _value: "vectorMask" }, ...this.target(layer.id)]));
-      } catch (error) { source.rasterFeatures.push(`shape:${String(error)}`); }
+        if (raw.hasVectorMask) {
+          source.kind = "shape";
+          source.shape = shape(raw, await this.get([
+            { _ref: "path", _enum: "path", _value: "vectorMask" }, ...this.target(layer.id)]), bounds);
+        } else {
+          if (!Array.isArray(raw.adjustment) || raw.adjustment.length !== 1) throw new Error("未知填充");
+          source.fill = paint(raw.adjustment[0], raw, bounds);
+        }
+      } catch (error) { source.rasterFeatures.push(`paint:${String(error)}`); }
     }
   }
 }
-module.exports = { DescriptorReader, pathComponents, shape, color, unit };
+module.exports = { DescriptorReader, pathComponents, shape, paint, color, unit };

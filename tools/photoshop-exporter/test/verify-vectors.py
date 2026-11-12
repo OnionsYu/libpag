@@ -57,10 +57,10 @@ def verify(folder, name, max_mae, max_difference, expected_images, reference_suf
         export = json.loads((folder / f"{name}.export.json").read_text())
         path = folder / export["output"]
     root = ET.parse(path).getroot()
-    counts = {tag: len(list(root.iter(tag))) for tag in ("Path", "Image", "Text")}
+    counts = {tag: len(list(root.iter(tag))) for tag in ("Path", "Rectangle", "Image", "Text")}
     if expected_images is not None and counts["Image"] != expected_images:
         raise AssertionError(f"{name}: expected {expected_images} images, found {counts}")
-    if expected_images == 0 and not counts["Path"]:
+    if expected_images == 0 and not (counts["Path"] or counts["Rectangle"]):
         raise AssertionError(f"{name}: missing vector paths")
     validation = subprocess.run([cli, "verify", str(path), "--skip-render", "--skip-layout", "--json"],
                                 capture_output=True, text=True)

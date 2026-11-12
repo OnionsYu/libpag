@@ -220,3 +220,34 @@ python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-st
   --cli ./cmake-build-debug/pagx --scales 1 --images 1 \
   --names isolated-group pass-through clipping group-mask adjustment
 ```
+
+### Paint 源模型与描边单位验证（2026-11-12）
+
+插件版本为 0.3.0，源快照升级到 v3，原生模块继续读取 v1/v2；桥接协议仍为 2。
+JS 与原生模块在加载时校验 schema 版本，必须一起更新。Paint 分离源色标、中点、
+透明度标记、插值方式和坐标矩阵；能采集属性不表示已经支持相应原生输出。
+当前新增无蒙版纯色填充层和单组件居中虚线，保留 Fill 图层类型与实际点单位。
+
+18 项 C++ 和 27 项 Node 测试通过。真实 Photoshop 27.4 的纯色填充、平头/圆头/
+方头虚线及 300 PPI 虚线共 5 个样例完成 1×/4× 比较，均为 0 个 Image，最大 alpha
+MAE 小于 0.085/255，非边缘误差小于 1/255，沿用 MAE≤0.5、边缘最大差≤64 的门槛。
+密集端帽重叠在 4× 出现超阈值覆盖率差，未放宽阈值；该类情况、布尔或非居中虚线、
+非默认描边透明度继续局部回退。透明度描述符约 35% 而实际宿主描边仍不透明的样例
+已记录；不能仅看字段名直接赋给 PAGX alpha。
+
+重叠端帽和非默认描边透明度的回退完成 1× 比较，alpha 误差为 0；Classic/Linear/
+Perceptual 三种渐变先保留源模型再回退，1× 回退像素误差均为 0。报告为
+`.tmp/photoshop-vector-stage1/stage2-*.json`。生成与验收入口：
+
+```js
+await require("./test/host-appearance.js").run(folder);
+await require("./test/host-gradients.js").run(folder);
+```
+
+```sh
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --names solid-fill dash dash-round dash-square dash-300
+python3 tools/photoshop-exporter/test/verify-vectors.py .tmp/photoshop-vector-stage1 \
+  --cli ./cmake-build-debug/pagx --scales 1 --images 1 \
+  --names dash-overlap stroke-opacity gradient-classic gradient-linear gradient-perceptual
+```

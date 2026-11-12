@@ -8,6 +8,7 @@
 #include "PhotoshopShapeBuilder.h"
 #include <algorithm>
 #include <stdexcept>
+#include "PhotoshopPaintBuilder.h"
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Path.h"
 #include "pagx/nodes/SolidColor.h"
@@ -37,11 +38,6 @@ tgfx::Path MakeComponent(const photoshop::PathComponent& component) {
     if (subpath.closed) path.close();
   }
   return path;
-}
-SolidColor* MakeColor(PAGXDocument* document, const photoshop::Color& value) {
-  auto color = document->makeNode<SolidColor>();
-  color->color = {value.red, value.green, value.blue, value.alpha};
-  return color;
 }
 Path* MakePath(PAGXDocument* document, const tgfx::Path& geometry) {
   auto data = document->makeNode<PathData>();
@@ -73,11 +69,11 @@ Path* MakePath(PAGXDocument* document, const tgfx::Path& geometry) {
   path->data = data;
   return path;
 }
-Fill* MakeFill(PAGXDocument* document, const tgfx::Path& geometry, const photoshop::Color& color,
+Fill* MakeFill(PAGXDocument* document, const tgfx::Path& geometry, const photoshop::Paint& color,
                float opacity) {
   auto fill = document->makeNode<Fill>();
   fill->alpha = opacity;
-  fill->color = MakeColor(document, color);
+  fill->color = BuildPhotoshopPaint(document, color);
   fill->fillRule =
       geometry.getFillType() == tgfx::PathFillType::EvenOdd ? FillRule::EvenOdd : FillRule::Winding;
   return fill;
@@ -85,6 +81,23 @@ Fill* MakeFill(PAGXDocument* document, const tgfx::Path& geometry, const photosh
 }  // namespace
 
 bool CanBuildShape(const photoshop::Shape& shape) {
+  if ((shape.fill && !CanBuildPhotoshopPaint(*shape.fill)) ||
+      (shape.stroke && !CanBuildPhotoshopPaint(shape.stroke->paint)))
+    return false;
+  // PS 27.4 can report a non-default strokeStyleOpacity while its composite still paints an
+  // opaque stroke. Preserve the source value, but do not equate it with PAGX painter alpha.
+  if (shape.stroke && shape.stroke->opacity != 1) return false;
+  if (shape.stroke && !shape.stroke->dashes.empty() &&
+      (shape.stroke->align != "center" || shape.components.size() > 1))
+    return false;
+  if (shape.stroke && shape.stroke->cap != "butt") {
+    const auto& dashes = shape.stroke->dashes;
+    // Overlapping extended caps have host-specific coverage. Odd patterns repeat with the
+    // opposite parity, so every interval is a gap in one of the two repetitions.
+    for (size_t i = dashes.size() % 2 ? 0 : 1; i < dashes.size(); i += dashes.size() % 2 ? 1 : 2) {
+      if (dashes[i] < shape.stroke->width) return false;
+    }
+  }
   // Initial subtract/intersect can depend on Photoshop's implicit canvas fill. Keep that in host.
   if (shape.components.empty() ||
       shape.components.front().operation != photoshop::PathOperation::Add)
@@ -131,7 +144,7 @@ void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::
   if (shape.stroke) {
     const auto& value = *shape.stroke;
     auto stroke = document->makeNode<Stroke>();
-    stroke->color = MakeColor(document, value.color);
+    stroke->color = BuildPhotoshopPaint(document, value.paint);
     stroke->width = value.width;
     stroke->alpha = value.opacity;
     stroke->miterLimit = value.miterLimit;
@@ -164,7 +177,8 @@ void BuildPhotoshopShape(PAGXDocument* document, Layer* layer, const photoshop::
       }
       auto mask = document->makeNode<Layer>(layer->id + "_stroke_mask");
       mask->visible = false;
-      mask->contents = {MakePath(document, clip), MakeFill(document, clip, {1, 1, 1, 1}, 1)};
+      mask->contents = {MakePath(document, clip),
+                        MakeFill(document, clip, photoshop::Color{1, 1, 1, 1}, 1)};
       auto outline = document->makeNode<Layer>();
       outline->mask = mask;
       outline->maskType = MaskType::Contour;

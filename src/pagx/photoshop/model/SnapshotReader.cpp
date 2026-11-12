@@ -65,7 +65,43 @@ Color ReadColor(const JSON& value) {
   return {Number(value.at("red")), Number(value.at("green")), Number(value.at("blue")),
           Number(value.at("alpha"))};
 }
-Shape ReadShape(const JSON& value) {
+Paint ReadPaint(const JSON& value) {
+  const auto kind = value.at("kind").get<std::string>();
+  Paint paint;
+  if (kind == "solid") {
+    Keys(value, {"kind", "color"});
+    paint.color = ReadColor(value.at("color"));
+  } else if (kind == "gradient") {
+    Keys(value, {"kind", "gradient"});
+    const auto& v = value.at("gradient");
+    Keys(v, {"type", "interpolation", "smoothness", "reverse", "dither", "matrix", "colors",
+             "opacity"});
+    Gradient gradient;
+    gradient.type = v.at("type").get<std::string>();
+    gradient.interpolation = v.at("interpolation").get<std::string>();
+    gradient.smoothness = Number(v.at("smoothness"));
+    gradient.reverse = v.at("reverse").get<bool>();
+    gradient.dither = v.at("dither").get<bool>();
+    if (!v.at("matrix").is_array() || v.at("matrix").size() != 6 || !v.at("colors").is_array() ||
+        !v.at("opacity").is_array())
+      throw std::invalid_argument("Invalid gradient arrays");
+    for (size_t i = 0; i < 6; ++i) gradient.matrix[i] = Number(v.at("matrix")[i]);
+    for (const auto& stop : v.at("colors")) {
+      Keys(stop, {"position", "midpoint", "color"});
+      gradient.colors.push_back(
+          {Number(stop.at("position")), Number(stop.at("midpoint")), ReadColor(stop.at("color"))});
+    }
+    for (const auto& stop : v.at("opacity")) {
+      Keys(stop, {"position", "midpoint", "opacity"});
+      gradient.opacity.push_back(
+          {Number(stop.at("position")), Number(stop.at("midpoint")), Number(stop.at("opacity"))});
+    }
+    paint.gradient = std::move(gradient);
+  } else
+    throw std::invalid_argument("Unknown paint kind: " + kind);
+  return paint;
+}
+Shape ReadShape(const JSON& value, int version) {
   Keys(value, {"components", "fill", "stroke"});
   Shape shape;
   const auto& components = value.at("components");
@@ -99,13 +135,14 @@ Shape ReadShape(const JSON& value) {
     }
     shape.components.push_back(std::move(component));
   }
-  if (value.contains("fill")) shape.fill = ReadColor(value.at("fill"));
+  if (value.contains("fill"))
+    shape.fill = version >= 3 ? ReadPaint(value.at("fill")) : Paint(ReadColor(value.at("fill")));
   if (value.contains("stroke")) {
     const auto& v = value.at("stroke");
-    Keys(v, {"color", "width", "opacity", "miterLimit", "cap", "join", "align", "dashes",
-             "dashOffset"});
+    Keys(v, {version >= 3 ? "paint" : "color", "width", "opacity", "miterLimit", "cap", "join",
+             "align", "dashes", "dashOffset"});
     Stroke stroke;
-    stroke.color = ReadColor(v.at("color"));
+    stroke.paint = version >= 3 ? ReadPaint(v.at("paint")) : Paint(ReadColor(v.at("color")));
     stroke.width = Number(v.at("width"));
     stroke.opacity = Number(v.at("opacity"));
     stroke.miterLimit = Number(v.at("miterLimit"));
@@ -119,13 +156,13 @@ Shape ReadShape(const JSON& value) {
   }
   return shape;
 }
-std::vector<Layer> Layers(const JSON& value) {
+std::vector<Layer> Layers(const JSON& value, int version) {
   if (!value.is_array()) throw std::invalid_argument("Expected layers array");
   std::vector<Layer> result;
   for (const auto& item : value) {
     Keys(item, {"id", "sourceLayerId", "name", "kind", "visible", "opacity", "fillOpacity",
                 "blendMode", "compositingKnown", "clippingBase", "features", "bounds", "text",
-                "rectangle", "children", "shape", "rasterFeatures"});
+                "rectangle", "children", "shape", "rasterFeatures", "fill"});
     Layer layer;
     layer.id = item.at("id").get<std::string>();
     layer.sourceLayerId = Integer(item.at("sourceLayerId"));
@@ -154,8 +191,9 @@ std::vector<Layer> Layers(const JSON& value) {
       rect.roundness = Number(v.at("roundness"));
       layer.rectangle = rect;
     }
-    if (item.contains("shape")) layer.shape = ReadShape(item.at("shape"));
-    layer.children = Layers(item.at("children"));
+    if (item.contains("shape")) layer.shape = ReadShape(item.at("shape"), version);
+    if (item.contains("fill")) layer.fill = ReadPaint(item.at("fill"));
+    layer.children = Layers(item.at("children"), version);
     result.push_back(std::move(layer));
   }
   return result;
@@ -181,7 +219,7 @@ Document ParseSnapshot(const std::string& text) {
     doc.bitDepth = Integer(root.at("bitDepth"));
     doc.bounds = Bounds(root.at("bounds"));
     doc.features = root.at("features").get<std::vector<std::string>>();
-    doc.layers = Layers(root.at("layers"));
+    doc.layers = Layers(root.at("layers"), doc.schemaVersion);
     Validate(doc);
     return doc;
   } catch (const JSON::exception& error) {

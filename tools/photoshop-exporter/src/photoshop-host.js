@@ -126,7 +126,7 @@ class PhotoshopHost {
       }
       return result;
     };
-    return { schemaVersion: 2, name: sourceName, hostVersion: this.hostVersion,
+    return { schemaVersion: 3, name: sourceName, hostVersion: this.hostVersion,
       resolution: doc.resolution, colorMode: doc.mode === constants.DocumentMode.RGB ? "RGB" : String(doc.mode),
       colorProfile: doc.colorProfileName, bitDepth,
       bounds: { left: 0, top: 0, width, height },

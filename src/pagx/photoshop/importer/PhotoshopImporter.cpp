@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include "PhotoshopCompositingPlanner.h"
+#include "PhotoshopPaintBuilder.h"
 #include "PhotoshopShapeBuilder.h"
 #include "pagx/nodes/Fill.h"
 #include "pagx/nodes/Image.h"
@@ -109,6 +110,18 @@ class Builder {
         layer->y = -source.bounds.top;
         layer->alpha = item.opacity;
         BuildPhotoshopShape(document.get(), layer, *item.shape, item.fillOpacity);
+      } else if (IsNativePhotoshopLayer(item) && item.fill) {
+        layer->alpha = item.opacity;
+        layer->x = -source.bounds.left;
+        layer->y = -source.bounds.top;
+        auto rect = document->makeNode<Rectangle>();
+        rect->position = {source.bounds.left + source.bounds.width / 2,
+                          source.bounds.top + source.bounds.height / 2};
+        rect->size = {source.bounds.width, source.bounds.height};
+        auto fill = document->makeNode<Fill>();
+        fill->alpha = item.fillOpacity;
+        fill->color = BuildPhotoshopPaint(document.get(), *item.fill);
+        layer->contents = {rect, fill};
       } else if (IsNativePhotoshopLayer(item) && item.rectangle) {
         const auto& value = *item.rectangle;
         layer->x = value.bounds.left - source.bounds.left;

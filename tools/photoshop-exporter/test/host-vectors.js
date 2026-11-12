@@ -61,7 +61,9 @@ async function baselineScales(doc, folder, name, context) {
         const raw = (await descriptor(scaled, layer)).value;
         const style = raw.AGMStrokeStyleInfo;
         if (style && style.strokeEnabled) strokes.push({ id: layer.id,
-          width: style.strokeStyleLineWidth._value * 4 });
+          width: style.strokeStyleLineWidth._value * 4,
+          dashes: style.strokeStyleLineDashSet.map(value => ({ ...value, _value: value._value * 4 })),
+          offset: { ...style.strokeStyleLineDashOffset, _value: style.strokeStyleLineDashOffset._value * 4 } });
       }
     };
     await collect(scaled.layers);
@@ -71,7 +73,8 @@ async function baselineScales(doc, folder, name, context) {
     for (const stroke of strokes) {
       await action({ _obj: "set", _target: [{ _ref: "contentLayer", _id: stroke.id }],
         to: { _obj: "shapeStyle", strokeStyle: { _obj: "strokeStyle", strokeStyleVersion: 2,
-          strokeStyleLineWidth: unit(stroke.width) } } });
+          strokeStyleLineWidth: unit(stroke.width), strokeStyleLineDashSet: stroke.dashes,
+          strokeStyleLineDashOffset: stroke.offset } } });
       const raw = await action({ _obj: "get", _target: [{ _ref: "layer", _id: stroke.id }] });
       if (raw.AGMStrokeStyleInfo.strokeStyleLineWidth._value !== stroke.width)
         throw new Error("Photoshop did not scale the reference stroke width");
