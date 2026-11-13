@@ -173,6 +173,7 @@ void HTMLLayerBuilder::bindDocument(PAGXDocument* document) {
   _document = document;
   _outerBoxShadows.clear();
   _cssChildFrames.clear();
+  _snapshotPrimitives.clear();
   _filterDecoder.bindDocument(document);
 }
 
@@ -210,7 +211,12 @@ Layer* HTMLLayerBuilder::createInnerHost(Layer* outer, const HTMLBoxAttributes& 
   return inner;
 }
 
-void HTMLLayerBuilder::appendCSSChild(Layer* host, Layer* child, const HTMLBoxAttributes& box) {
+void HTMLLayerBuilder::appendCSSChild(Layer* host, Layer* child, const HTMLBoxAttributes& box,
+                                      const DOMNode* element) {
+  if (HasSnapshotRole(element, "text") || HasSnapshotRole(element, "image") ||
+      HasSnapshotRole(element, "vector") || HasSnapshotRole(element, "geometry")) {
+    _snapshotPrimitives.insert(child);
+  }
   if (!child->includeInLayout) {
     const float border = box.borderSet ? box.borderWidthPx : 0.0f;
     const auto& padding = host->padding;
@@ -299,6 +305,68 @@ void HTMLLayerBuilder::normalizeCSSChildFrames(const std::unordered_set<Layer*>&
     host->children = std::move(children);
   };
   for (auto* layer : _document->layers) visit(layer, false);
+}
+
+void HTMLLayerBuilder::normalizeSnapshotPrimitives(
+    const std::unordered_set<Layer*>& animatedLayers) {
+  std::function<void(Layer*, bool, bool)> visit = [&](Layer* host, bool parentWidth,
+                                                      bool parentHeight) {
+    const bool width = std::isfinite(host->width) ||
+                       (parentWidth && (std::isfinite(host->percentWidth) ||
+                                        (std::isfinite(host->left) && std::isfinite(host->right))));
+    const bool height =
+        std::isfinite(host->height) ||
+        (parentHeight && (std::isfinite(host->percentHeight) ||
+                          (std::isfinite(host->top) && std::isfinite(host->bottom))));
+    for (auto* child : host->children) visit(child, width, height);
+    // Vector contents paint before child layers. Only a leading run can move into contents;
+    // crossing an authored layer would reverse the CSS paint order. Fixed parent dimensions
+    // also keep formerly out-of-flow primitives from contributing to intrinsic measurement.
+    size_t count = 0;
+    for (auto* child : host->children) {
+      if (!width || !height || _snapshotPrimitives.count(child) == 0 ||
+          animatedLayers.count(child) != 0 ||
+          (host->layout != LayoutMode::None && child->includeInLayout) || !child->id.empty() ||
+          !child->name.empty() || !child->children.empty() || child->contents.empty() ||
+          !child->visible || child->alpha != 1 || child->blendMode != BlendMode::Normal ||
+          !child->groupOpacity || !child->passThroughBackground || !child->antiAlias ||
+          child->mask != nullptr || child->hasScrollRect || child->clipToBounds ||
+          !child->styles.empty() || !child->filters.empty() || child->composition != nullptr ||
+          !child->compositionFilePath.empty() || child->externalDoc != nullptr ||
+          !child->timelines.empty() || !child->vmContext.empty() ||
+          !child->importDirective.source.empty() || !child->importDirective.content.empty() ||
+          !child->matrix.isIdentity() || !child->matrix3D.isIdentity() || child->preserve3D ||
+          child->x != 0 || child->y != 0 || child->z != 0 || child->rotationX != 0 ||
+          child->rotationY != 0 || child->rotationZ != 0 || child->scaleX != 1 ||
+          child->scaleY != 1 || child->scaleZ != 1 || child->skewX != 0 || child->skewY != 0 ||
+          child->perspective != 0) {
+        break;
+      }
+      bool hasUserData =
+          std::any_of(child->customData.begin(), child->customData.end(),
+                      [](const auto& entry) { return entry.first != "pagx-paint-order"; });
+      if (hasUserData) break;
+      // A Group retains the primitive's constraint frame, text measurement and painter scope.
+      // Concatenating Text/Fill directly would let a text fill repaint the owner's background.
+      auto* group = _document->makeNode<Group>();
+      group->width = child->width;
+      group->height = child->height;
+      group->percentWidth = child->percentWidth;
+      group->percentHeight = child->percentHeight;
+      group->left = child->left;
+      group->right = child->right;
+      group->top = child->top;
+      group->bottom = child->bottom;
+      group->centerX = child->centerX;
+      group->centerY = child->centerY;
+      group->padding = child->padding;
+      group->elements = std::move(child->contents);
+      host->contents.push_back(group);
+      ++count;
+    }
+    host->children.erase(host->children.begin(), host->children.begin() + count);
+  };
+  for (auto* layer : _document->layers) visit(layer, true, true);
 }
 
 Fill* HTMLLayerBuilder::buildSolidFill(const Color& color) {

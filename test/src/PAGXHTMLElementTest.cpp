@@ -27,6 +27,7 @@
 #include "pagx/nodes/Channel.h"
 #include "pagx/nodes/Ellipse.h"
 #include "pagx/nodes/Fill.h"
+#include "pagx/nodes/Group.h"
 #include "pagx/nodes/Image.h"
 #include "pagx/nodes/ImagePattern.h"
 #include "pagx/nodes/Layer.h"
@@ -94,6 +95,75 @@ PAG_TEST(PAGXHTMLElementTest, SnapshotOwnershipIsNotUserCustomData) {
   ASSERT_NE(layer, nullptr);
   ASSERT_EQ(layer->customData.size(), 1u);
   EXPECT_EQ(layer->customData.at("label"), "authored");
+}
+
+PAG_TEST(PAGXHTMLElementTest, SnapshotTextPrimitiveKeepsConstraintsAndPainterScope) {
+  const std::string prefix =
+      "<div id=\"box\" style=\"width:100px;height:60px;background:red\"><span ";
+  const std::string suffix =
+      "style=\"position:absolute;left:3.6px;top:-0.7px;width:60%;height:24px;"
+      "font-size:16px;line-height:21.3px;color:blue;white-space:nowrap\">Hello</span></div>";
+  auto reference = ParseElements(prefix + suffix);
+  auto document = ParseElements(prefix + "data-pagx-node-role=\"text\" " + suffix);
+  ASSERT_NE(reference, nullptr);
+  ASSERT_NE(document, nullptr);
+  auto* host = NamedLayer(document);
+  auto* original = NamedLayer(reference);
+  ASSERT_TRUE(host->children.empty());
+  ASSERT_EQ(host->contents.back()->nodeType(), pagx::NodeType::Group);
+  auto* group = static_cast<pagx::Group*>(host->contents.back());
+  ASSERT_EQ(original->children.size(), 1u);
+  auto* text = original->children.front();
+  ASSERT_EQ(group->elements.size(), text->contents.size());
+  EXPECT_EQ(host->contents.front()->nodeType(), pagx::NodeType::Rectangle);
+  for (float width : {100.0f, 157.5f, 240.0f}) {
+    original->width = host->width = width;
+    reference->applyLayout();
+    document->applyLayout();
+    EXPECT_FLOAT_EQ(group->layoutBounds().x, text->layoutBounds().x);
+    EXPECT_FLOAT_EQ(group->layoutBounds().y, text->layoutBounds().y);
+    EXPECT_FLOAT_EQ(group->layoutBounds().width, text->layoutBounds().width);
+    EXPECT_FLOAT_EQ(group->layoutBounds().height, text->layoutBounds().height);
+  }
+}
+
+PAG_TEST(PAGXHTMLElementTest, SnapshotPrimitivesDoNotCrossAuthoredPaintSlots) {
+  auto document = ParseElements(
+      "<div id=\"box\" style=\"width:100px;height:60px\">"
+      "<div data-pagx-node-role=\"geometry\" style=\"width:20px;height:20px;background:red\"/>"
+      "<span id=\"authored\" data-pagx-node-role=\"element\">middle</span>"
+      "<span data-pagx-node-role=\"text\">last</span></div>");
+  ASSERT_NE(document, nullptr);
+  auto* host = NamedLayer(document);
+  ASSERT_EQ(host->contents.size(), 1u);
+  EXPECT_EQ(host->contents.front()->nodeType(), pagx::NodeType::Group);
+  ASSERT_EQ(host->children.size(), 2u);
+  EXPECT_EQ(host->children.front()->id, "authored");
+  EXPECT_FALSE(host->children.back()->contents.empty());
+}
+
+PAG_TEST(PAGXHTMLElementTest, SnapshotPrimitiveRetainsIndependentSemantics) {
+  for (const auto& properties :
+       {"id=\"target\"", "name=\"named\"", "data-user=\"value\"", "style=\"opacity:0.5\"",
+        "style=\"filter:blur(2px)\"", "style=\"transform:scale(0.8)\"",
+        "style=\"isolation:isolate\"", "style=\"overflow:hidden;width:10px;height:10px\""}) {
+    SCOPED_TRACE(properties);
+    auto document = ParseElements(
+        "<div id=\"box\" style=\"width:100px;height:60px\"><span data-pagx-node-role=\"text\" " +
+        std::string(properties) + ">text</span></div>");
+    ASSERT_NE(document, nullptr);
+    EXPECT_EQ(NamedLayer(document)->children.size(), 1u);
+  }
+  auto flex = ParseElements(
+      "<div id=\"box\" style=\"display:flex;width:100px;height:60px;justify-content:center\">"
+      "<span data-pagx-node-role=\"text\">flex item</span></div>");
+  ASSERT_NE(flex, nullptr);
+  EXPECT_EQ(NamedLayer(flex)->children.size(), 1u);
+  auto intrinsic = ParseElements(
+      "<div id=\"box\"><span data-pagx-node-role=\"text\" "
+      "style=\"position:absolute\">out of flow</span></div>");
+  ASSERT_NE(intrinsic, nullptr);
+  EXPECT_EQ(NamedLayer(intrinsic)->children.size(), 1u);
 }
 
 PAG_TEST(PAGXHTMLElementTest, PercentageRasterBackgroundUsesFittedScaleModes) {

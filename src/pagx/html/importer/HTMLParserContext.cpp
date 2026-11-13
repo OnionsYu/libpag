@@ -402,6 +402,7 @@ std::shared_ptr<PAGXDocument> HTMLParserContext::parseDOM(const std::shared_ptr<
   std::unordered_set<Layer*> animatedLayers;
   for (const auto& entry : _pendingAnimations) animatedLayers.insert(entry.second);
   _layerBuilder->normalizeCSSChildFrames(animatedLayers);
+  _layerBuilder->normalizeSnapshotPrimitives(animatedLayers);
   // Plan a provisional nonnegative origin before generating keyframes or fill-mode baselines. SVG
   // shapes and ordinary elements can belong to the same timing group. Discarded candidates may
   // affect this origin; finalizeTiming corrects it after the playable objects have been emitted.
@@ -773,7 +774,7 @@ Layer* HTMLParserContext::convertBody(const std::shared_ptr<DOMNode>& body, floa
     if (child->type == DOMNodeType::Element) {
       auto* childLayer = convertElement(child, inherited, 1);
       if (childLayer) {
-        _layerBuilder->appendCSSChild(contentHost, childLayer, box);
+        _layerBuilder->appendCSSChild(contentHost, childLayer, box, child.get());
       }
     } else if (child->type == DOMNodeType::Text) {
       // Stray text directly under <body> — match convertContainer's behaviour so authors
@@ -934,7 +935,7 @@ Layer* HTMLParserContext::convertContainer(const std::shared_ptr<DOMNode>& eleme
     if (child->type == DOMNodeType::Element) {
       auto* childLayer = convertElement(child, inherited, depth + 1);
       if (childLayer) {
-        _layerBuilder->appendCSSChild(contentHost, childLayer, box);
+        _layerBuilder->appendCSSChild(contentHost, childLayer, box, child.get());
       }
     } else if (child->type == DOMNodeType::Text) {
       std::string trimmed = Trim(child->name);

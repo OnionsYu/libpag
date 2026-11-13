@@ -141,10 +141,14 @@ class HTMLLayerBuilder {
 
   // Keep CSS absolute children relative to the padding box, independently of the
   // content inset used by PAGX flow layout. Each child keeps its paint-order slot.
-  void appendCSSChild(Layer* host, Layer* child, const HTMLBoxAttributes& box);
+  void appendCSSChild(Layer* host, Layer* child, const HTMLBoxAttributes& box,
+                      const DOMNode* element = nullptr);
 
   // Lower reference frames after the whole tree is available, including transform ancestry.
   void normalizeCSSChildFrames(const std::unordered_set<Layer*>& animatedLayers);
+
+  // Generated paint primitives use vector contents when their layout/compositing is equivalent.
+  void normalizeSnapshotPrimitives(const std::unordered_set<Layer*>& animatedLayers);
 
   /** Places geometric outer box shadows behind `inner`, outside its overflow clip.
    *  Also hoists legacy DropShadowStyle entries when clipping requires a wrapper.
@@ -177,6 +181,7 @@ class HTMLLayerBuilder {
   PAGXDocument* _document = nullptr;
   std::unordered_map<Layer*, std::vector<Layer*>> _outerBoxShadows;
   std::unordered_set<Layer*> _cssChildFrames;
+  std::unordered_set<Layer*> _snapshotPrimitives;
   std::function<HTMLBackgroundImage(const std::string&)> _backgroundImageResolver;
 };
 
