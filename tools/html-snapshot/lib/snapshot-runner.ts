@@ -339,6 +339,8 @@ export interface RunSnapshotResult {
   html: string;
   width: number;
   height: number;
+  /** Source ownership for normal document captures; current-state captures use their live tree. */
+  scene?: import('./snapshot-scene').SnapshotScene;
   /** Painting features that require a model beyond the supported static 2D subset. */
   warnings?: string[];
   fonts: SavedFont[];
@@ -826,6 +828,7 @@ async function captureSnapshot(
     // ships the ~70-byte entry expression now.
     const snapshot = await page.evaluate(snapshotExpr) as {
       html: string; width: number; height: number; warnings?: string[];
+      scene?: import('./snapshot-scene').SnapshotScene;
     };
     for (const warning of snapshot.warnings || []) {
       if (log) log(warning);

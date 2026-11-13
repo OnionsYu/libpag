@@ -300,20 +300,55 @@ describe('stacking and flow order', () => {
 });
 
 describe('overflow and containing blocks', () => {
-  test('splits inline decorations without duplicating identity or border paint', () => {
-    start('<span id="inline" name="label" style="background:blue;border-left:2px solid red;outline:1px solid black;box-shadow:0px 0px 2px red">' +
+  test('joins adjacent inline decorations and content without duplicating identity or border paint', () => {
+    start('<span id="inline" name="label" style="background:blue;border-left:2px solid red;outline:1px solid black">' +
       '<b data-leaf="first">first</b><i data-leaf="second">second</i></span>');
     const output = compile();
     expect(leaves(output)).toEqual(['first', 'second']);
     expect(output.querySelectorAll('#inline')).toHaveLength(1);
     expect(output.querySelectorAll('[name=label]')).toHaveLength(1);
     const content = output.querySelector('#inline');
-    expect(content.style.background).toBe('');
-    expect(content.style.outline).toBe('');
-    expect(content.style.boxShadow).toBe('');
+    expect(output.children).toHaveLength(1);
+    expect(content.style.background).toBe('blue');
+    expect(content.style.outline).toBe('1px solid black');
     expect(content.style.borderLeftWidth).toBe('2px');
-    expect(content.style.borderLeftColor).toBe('transparent');
+    expect(content.style.borderLeftColor).toBe('red');
     expect(output.firstElementChild.style.background).toBe('blue');
+  });
+
+  test('keeps box-shadow decoration outside the descendant content scope', () => {
+    start('<div id="shadow" style="background:red;box-shadow:0px 0px 2px red">' +
+      '<span data-leaf="text">text</span></div>');
+    const output = compile();
+    expect(output.children).toHaveLength(2);
+    expect(output.firstElementChild.style.boxShadow).toBe('0px 0px 2px red');
+    expect(output.querySelector('#shadow').style.boxShadow).toBe('');
+    expect(output.querySelector('#shadow').textContent).toBe('text');
+  });
+
+  test('joins an entire contiguous source subtree from its nested paint fragments', () => {
+    start('<div id="outer" style="background:red"><div id="inner" style="background:blue">' +
+      '<span data-leaf="text">text</span></div></div>');
+    const output = compile();
+    expect(output.children).toHaveLength(1);
+    expect(output.querySelectorAll('[data-pagx-node-source="1"]')).toHaveLength(1);
+    expect(output.querySelectorAll('[data-pagx-node-source="2"]')).toHaveLength(1);
+    expect(output.querySelector('#inner').parentElement.id).toBe('outer');
+    expect(output.querySelector('#outer').style.background).toBe('red');
+    expect(output.querySelector('#inner').style.background).toBe('blue');
+    expect(leaves(output)).toEqual(['text']);
+  });
+
+  test('retains source fragments when another source paints between decoration and content', () => {
+    start('<div id="first" style="background:red"><span data-leaf="one">one</span></div>' +
+      '<div id="second" style="background:blue"><span data-leaf="two">two</span></div>');
+    const output = compile();
+    expect(output.querySelectorAll('[data-pagx-node-source="1"]')).toHaveLength(2);
+    expect(output.querySelectorAll('[data-pagx-node-source="3"]')).toHaveLength(2);
+    expect(output.querySelector('#first').style.background).toBe('');
+    expect(output.children[0].style.background).toBe('red');
+    expect(output.children[1].style.background).toBe('blue');
+    expect(leaves(output)).toEqual(['one', 'two']);
   });
 
   test('clips renderer-generated image content to the padding edge with scaled elliptical radii', () => {

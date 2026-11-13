@@ -136,7 +136,7 @@ The emitted `data-pagx-paint-order="fixed"` attribute prevents the importer's fl
 from rearranging planned fragments. Ordinary flex subtrees stay as flex where their children
 can be emitted together. `isolation: isolate` preserves context boundaries for blending.
 
-Snapshots also retain a source model (`scene.version = 1` on the browser capture result).
+Normal document captures also retain a source model (`scene.version = 1` on the capture result).
 It records DOM ownership separately from layout parents, absolute/fixed containing blocks,
 clip ancestry, border/padding insets and measured geometry. Generated preview nodes carry
 `data-pagx-node-role`, `data-pagx-node-source` and, for source elements,
@@ -144,6 +144,20 @@ clip ancestry, border/padding insets and measured geometry. Generated preview no
 An `element` is the primary source box; `fragment` and `decoration` are paint-order pieces;
 `text`, `image`, `vector` and `geometry` are generated content; `clip` and `coordinate`
 describe necessary coordinate/clip scopes. A preview tag alone does not imply a PAGX Layer.
+
+Layer normalization keeps authored element ownership and makes only local, proven-equivalent
+changes. Adjacent fragments of the same source merge when their layout and clip contracts match;
+interleaved paint slots, compositing effects and independent box-shadow scopes stay separate.
+Generated text and geometric primitives become `Group` contents when they have no independent
+identity, effect or flex responsibility. Their constraints and painter scopes remain intact;
+content is never moved across an existing child layer's paint slot.
+
+The native importer substitutes start-anchored absolute origins while preserving both layout
+rounding steps. Percentage sizes and end/center anchors keep a shared reference frame for each
+consecutive paint run. Transformed or animated ancestry keeps the original reference operations
+to avoid floating-point changes at glyph pixel-snapping thresholds. Padding/layout hosts, masks,
+SVG imports, filters and shadow scopes remain where PAGX needs them to express the CSS semantics.
+No rasterization is introduced by these normalization steps.
 
 The output still has to pass through `pagx import --format html` to be turned
 into PAGX. The importer's normaliser handles any final cleanup (unit

@@ -5268,7 +5268,7 @@ function snapshotMainImpl(opts) {
     <title>${title.replace(/</g, '&lt;').replace(/&/g, '&amp;')}</title>
     <style>${styleBlock}</style>
   </head>
-  <body data-pagx-paint-order="fixed" style="${bodyStyle.join('; ')}">
+  <body data-pagx-paint-order="fixed" data-pagx-node-role="element" data-pagx-node-source="0" style="${bodyStyle.join('; ')}">
 ${clipDefsSvg}${content}
   </body>
 </html>

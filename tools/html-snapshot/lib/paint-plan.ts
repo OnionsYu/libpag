@@ -557,6 +557,75 @@ function emitPaintItems(root, items, target, identities, pendingClips = []) {
   }
 }
 
+function canMergePaintFragments(first, second) {
+  if (first.nodeType !== 1 || second.nodeType !== 1) return false;
+  const source = first.getAttribute('data-pagx-node-source');
+  if (source === null || source !== second.getAttribute('data-pagx-node-source')) return false;
+  const firstRole = first.getAttribute('data-pagx-node-role');
+  const secondRole = second.getAttribute('data-pagx-node-role');
+  if (!['element', 'fragment', 'decoration'].includes(firstRole) ||
+      !['element', 'fragment'].includes(secondRole)) return false;
+  // Never merge two authored identities, nor move a later decoration in front of earlier
+  // content. The second fragment must be the neutral continuation of the same source box.
+  if (firstRole === 'element' && secondRole === 'element') return false;
+  // A box shadow has a border-box paint scope, independent of descendant content. Combining
+  // it with the continuation would require an extra native shadow/clip host around that entire
+  // subtree. Keep the decoration beside the source content instead of increasing its depth.
+  if (first.style.boxShadow && first.style.boxShadow !== 'none') return false;
+  if (paintHasDecoration(second) && second.style.backgroundClip !== 'text' &&
+      second.style.webkitBackgroundClip !== 'text') {
+    // Transparent borders retain coordinate semantics without painting a second decoration.
+    const neutral = second.cloneNode(false);
+    neutralPaintStyle(neutral);
+    if (neutral.style.cssText !== second.style.cssText) return false;
+  }
+  for (const node of [first, second]) {
+    // Real compositing/animation boundaries are indivisible. Equal CSS values on two layers
+    // do not prove that applying the effect once to their union is equivalent.
+    for (const property of ['opacity', 'filter', 'backdrop-filter', '-webkit-backdrop-filter',
+      'mix-blend-mode', 'isolation', 'transform', 'mask', 'mask-image', '-webkit-mask-image',
+      'clip-path', 'animation', 'animation-name']) {
+      const value = node.style.getPropertyValue(property);
+      if (value && !['none', 'normal', 'auto', '1'].includes(value)) return false;
+    }
+  }
+  // Compare the full layout and clip contract, including transparent border widths and
+  // padding. Matching source ids alone is insufficient: overflow fragments may be rebased
+  // to different containing blocks, or inset to the padding edge.
+  const neutral = first.cloneNode(false);
+  neutralPaintStyle(neutral);
+  const properties = new Set([...Array.from(neutral.style), ...Array.from(second.style)]);
+  for (const property of properties) {
+    if (neutral.style.getPropertyValue(property) !== second.style.getPropertyValue(property) ||
+        neutral.style.getPropertyPriority(property) !== second.style.getPropertyPriority(property)) return false;
+  }
+  return true;
+}
+
+function mergePaintFragments(parent) {
+  for (const child of Array.from(parent.children)) {
+    if (child.localName !== 'svg') mergePaintFragments(child);
+  }
+  let first = parent.firstChild;
+  while (first && first.nextSibling) {
+    const second = first.nextSibling;
+    if (!canMergePaintFragments(first, second)) {
+      first = second;
+      continue;
+    }
+    if (second.getAttribute('data-pagx-node-role') === 'element') {
+      first.setAttribute('data-pagx-node-role', 'element');
+      for (const name of ['id', 'name']) {
+        if (second.hasAttribute(name)) first.setAttribute(name, second.getAttribute(name));
+      }
+    }
+    while (second.firstChild) first.appendChild(second.firstChild);
+    second.remove();
+    // Joining ancestor fragments may expose another adjacent pair one level below.
+    mergePaintFragments(first);
+  }
+}
+
 function compilePaintMarkup(html) {
   const template = document.createElement('template');
   template.innerHTML = html;
@@ -571,6 +640,7 @@ function compilePaintMarkup(html) {
   assignPaintOrder(root, { value: 0 });
   const output = document.createElement('div');
   emitPaintItems(root, planPaintContext(root), output, new Set());
+  mergePaintFragments(output);
   if (!output.hasChildNodes()) return '';
   // The native importer consumes XML-compatible HTML. innerHTML would turn <img/> into
   // <img>, and serialize non-breaking spaces as the HTML-only &nbsp; entity.
@@ -615,6 +685,7 @@ const PAINT_PLAN_HELPERS_SRC = [
   paintHasDecoration, buildPaintBoxes, assignPaintOrder, planPaintContext, planPaintFlow, collectPaintFlow,
   neutralPaintStyle, positionPaintClone, clonePaintBox, paintItemSource, paintItemClips, paintPath,
   clearPaintEffects, paintBorder, insetPaintClip, makePaintClip, emitPaintItems, compilePaintMarkup,
+  canMergePaintFragments, mergePaintFragments,
   endPaintCapture, captureSnapshotScene,
 ].map(fn => fn.toString()).join('\n\n') + '\n' + snapshotScene.SNAPSHOT_SCENE_HELPERS_SRC;
 

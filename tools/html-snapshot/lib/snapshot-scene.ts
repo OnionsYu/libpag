@@ -20,6 +20,11 @@ export interface SnapshotSource {
   geometry: { left: number; top: number; width: number; height: number } | null;
 }
 
+export interface SnapshotScene {
+  version: 1;
+  sources: SnapshotSource[];
+}
+
 function snapshotInsets(style: CSSStyleDeclaration, prefix: string, suffix = ''): number[] {
   return ['top', 'right', 'bottom', 'left'].map(side =>
     parseFloat(style.getPropertyValue(`${prefix}-${side}${suffix}`)) || 0);
