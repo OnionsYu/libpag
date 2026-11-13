@@ -172,6 +172,7 @@ HTMLLayerBuilder::HTMLLayerBuilder(HTMLDiagnosticSink& sink, HTMLValueParser& va
 void HTMLLayerBuilder::bindDocument(PAGXDocument* document) {
   _document = document;
   _outerBoxShadows.clear();
+  _cssChildFrames.clear();
   _filterDecoder.bindDocument(document);
 }
 
@@ -215,6 +216,17 @@ void HTMLLayerBuilder::appendCSSChild(Layer* host, Layer* child, const HTMLBoxAt
     const auto& padding = host->padding;
     if (padding.left != border || padding.right != border || padding.top != border ||
         padding.bottom != border) {
+      // Percent, center and end anchors need the padding-box reference dimensions. Reuse a
+      // frame only across a consecutive run so sharing cannot change the paint order.
+      if (!host->children.empty()) {
+        auto* previous = host->children.back();
+        if (_cssChildFrames.count(previous) != 0 && previous->left == border - padding.left &&
+            previous->right == border - padding.right && previous->top == border - padding.top &&
+            previous->bottom == border - padding.bottom) {
+          previous->children.push_back(child);
+          return;
+        }
+      }
       auto frame = _document->makeNode<Layer>();
       frame->includeInLayout = false;
       frame->left = border - padding.left;
@@ -222,11 +234,71 @@ void HTMLLayerBuilder::appendCSSChild(Layer* host, Layer* child, const HTMLBoxAt
       frame->top = border - padding.top;
       frame->bottom = border - padding.bottom;
       frame->children.push_back(child);
+      _cssChildFrames.insert(frame);
       host->children.push_back(frame);
       return;
     }
   }
   host->children.push_back(child);
+}
+
+void HTMLLayerBuilder::normalizeCSSChildFrames(const std::unordered_set<Layer*>& animatedLayers) {
+  std::function<void(Layer*, bool)> visit = [&](Layer* host, bool transformed) {
+    // Regrouping translations below a fractional transform changes floating-point matrix
+    // accumulation. That can cross a glyph rasterizer's pixel-snapping threshold. Keep the
+    // reference frames in transformed/animated coordinate spaces, even when the real-number
+    // algebra is equivalent.
+    transformed = transformed || !host->matrix.isIdentity() || !host->matrix3D.isIdentity() ||
+                  host->rotationX != 0 || host->rotationY != 0 || host->rotationZ != 0 ||
+                  host->scaleX != 1 || host->scaleY != 1 || host->scaleZ != 1 || host->skewX != 0 ||
+                  host->skewY != 0 || host->perspective != 0 || host->z != 0 || host->preserve3D ||
+                  host->x != std::round(host->x) || host->y != std::round(host->y) ||
+                  animatedLayers.count(host) != 0;
+    std::vector<Layer*> children;
+    for (auto* child : host->children) {
+      visit(child, transformed);
+      if (transformed || _cssChildFrames.count(child) == 0) {
+        children.push_back(child);
+        continue;
+      }
+      // The reference frame is only needed by percent, center, and end anchors. Fixed and
+      // intrinsic start-anchored children can use the parent's content origin directly.
+      Layer* run = nullptr;
+      for (auto* content : child->children) {
+        const bool sizeIndependent =
+            animatedLayers.count(content) == 0 && content->matrix.isIdentity() &&
+            content->matrix3D.isIdentity() && std::isnan(content->percentWidth) &&
+            std::isnan(content->percentHeight) && std::isnan(content->right) &&
+            std::isnan(content->bottom) && std::isnan(content->centerX) &&
+            std::isnan(content->centerY);
+        if (sizeIndependent) {
+          // Preserve both allocation-rounding steps, including negative half-pixel offsets.
+          const float x = std::isnan(content->left) ? 0.0f : std::round(content->left);
+          const float y = std::isnan(content->top) ? 0.0f : std::round(content->top);
+          content->left = std::round(child->left + host->padding.left) + x - host->padding.left;
+          content->top = std::round(child->top + host->padding.top) + y - host->padding.top;
+          children.push_back(content);
+          run = nullptr;
+        } else {
+          // Share only consecutive dependent children. Splitting at every lowered child keeps
+          // all foreground/background and backdrop-sampling paint slots unchanged.
+          if (run == nullptr) {
+            run = _document->makeNode<Layer>();
+            run->includeInLayout = false;
+            run->left = child->left;
+            run->right = child->right;
+            run->top = child->top;
+            run->bottom = child->bottom;
+            children.push_back(run);
+          }
+          run->children.push_back(content);
+        }
+      }
+      child->children.clear();
+    }
+    host->children = std::move(children);
+  };
+  for (auto* layer : _document->layers) visit(layer, false);
 }
 
 Fill* HTMLLayerBuilder::buildSolidFill(const Color& color) {

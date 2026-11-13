@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include "pagx/html/importer/HTMLBackgroundLayout.h"
 #include "pagx/html/importer/HTMLBoxAttributes.h"
 #include "pagx/html/importer/HTMLSvgFilterDecoder.h"
@@ -142,6 +143,9 @@ class HTMLLayerBuilder {
   // content inset used by PAGX flow layout. Each child keeps its paint-order slot.
   void appendCSSChild(Layer* host, Layer* child, const HTMLBoxAttributes& box);
 
+  // Lower reference frames after the whole tree is available, including transform ancestry.
+  void normalizeCSSChildFrames(const std::unordered_set<Layer*>& animatedLayers);
+
   /** Places geometric outer box shadows behind `inner`, outside its overflow clip.
    *  Also hoists legacy DropShadowStyle entries when clipping requires a wrapper.
    *  Returns `inner` unchanged when no split is needed. */
@@ -172,6 +176,7 @@ class HTMLLayerBuilder {
   HTMLSvgFilterDecoder _filterDecoder;
   PAGXDocument* _document = nullptr;
   std::unordered_map<Layer*, std::vector<Layer*>> _outerBoxShadows;
+  std::unordered_set<Layer*> _cssChildFrames;
   std::function<HTMLBackgroundImage(const std::string&)> _backgroundImageResolver;
 };
 

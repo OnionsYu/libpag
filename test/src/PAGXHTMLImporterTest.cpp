@@ -6942,11 +6942,12 @@ PAG_TEST(PAGXHTMLImporterTest, AbsoluteChildrenUsePaddingBoxWithPercentAndEndAnc
   doc->applyLayout();
   auto* outer = doc->layers.front()->children.front();
   auto* host = outer->children.front();
-  ASSERT_EQ(host->children.size(), 3u);
+  ASSERT_EQ(host->children.size(), 2u);
   auto* flow = host->children[0];
   EXPECT_FLOAT_EQ(flow->layoutBounds().x, 22);
   EXPECT_FLOAT_EQ(flow->layoutBounds().y, 14);
   auto* frame = host->children[1];
+  ASSERT_EQ(frame->children.size(), 2u);
   auto* absolute = frame->children.front();
   EXPECT_FLOAT_EQ(frame->layoutBounds().x, 2);
   EXPECT_FLOAT_EQ(frame->layoutBounds().y, 2);
@@ -6954,10 +6955,98 @@ PAG_TEST(PAGXHTMLImporterTest, AbsoluteChildrenUsePaddingBoxWithPercentAndEndAnc
   EXPECT_FLOAT_EQ(absolute->layoutBounds().width, 98);
   EXPECT_FLOAT_EQ(frame->layoutBounds().x + absolute->layoutBounds().x, 95);
   EXPECT_FLOAT_EQ(frame->layoutBounds().y + absolute->layoutBounds().y, 71);
-  auto* stretchFrame = host->children[2];
-  auto* stretch = stretchFrame->children.front();
+  auto* stretch = frame->children[1];
   EXPECT_FLOAT_EQ(stretch->layoutBounds().width, 189);
-  EXPECT_FLOAT_EQ(stretchFrame->layoutBounds().x + stretch->layoutBounds().x, 5);
+  EXPECT_FLOAT_EQ(frame->layoutBounds().x + stretch->layoutBounds().x, 5);
+  outer->width = 240;
+  doc->applyLayout();
+  EXPECT_FLOAT_EQ(frame->layoutBounds().width, 236);
+  EXPECT_FLOAT_EQ(absolute->layoutBounds().width, 118);
+  EXPECT_FLOAT_EQ(frame->layoutBounds().x + absolute->layoutBounds().x, 115);
+  EXPECT_FLOAT_EQ(stretch->layoutBounds().width, 229);
+}
+
+PAG_TEST(PAGXHTMLImporterTest, AbsoluteOriginSubstitutionPreservesFractionalRounding) {
+  auto doc = ParseRaw(R"HTML(
+    <html><body style="width:300px;height:200px">
+      <div style="width:200px;height:100px;padding:3.2px 5.7px;border:1.4px solid black">
+        <div id="positive" style="position:absolute;left:0.4px;top:0.6px;width:10px;height:8px"/>
+        <div id="negative" style="position:absolute;left:-0.6px;top:-0.4px;width:10px;height:8px"/>
+      </div>
+    </body></html>
+  )HTML");
+  ASSERT_NE(doc, nullptr);
+  doc->applyLayout();
+  auto* host = doc->layers.front()->children.front()->children.front();
+  ASSERT_EQ(host->children.size(), 2u);
+  auto* positive = host->children[0];
+  auto* negative = host->children[1];
+  EXPECT_EQ(positive->id, "positive");
+  EXPECT_EQ(negative->id, "negative");
+  EXPECT_FLOAT_EQ(positive->layoutBounds().x, 1);
+  EXPECT_FLOAT_EQ(positive->layoutBounds().y, 2);
+  EXPECT_FLOAT_EQ(negative->layoutBounds().x, 0);
+  EXPECT_FLOAT_EQ(negative->layoutBounds().y, 1);
+}
+
+PAG_TEST(PAGXHTMLImporterTest, AbsoluteReferenceFramesDoNotCrossPaintSiblings) {
+  auto doc = ParseRaw(R"HTML(
+    <html><body style="width:300px;height:200px">
+      <div style="display:flex;width:200px;height:100px;padding:3px;border:2px solid black">
+        <div style="position:absolute;right:0;width:50%;height:10px"/>
+        <div id="middle" style="width:10px;height:10px"/>
+        <div style="position:absolute;right:0;width:50%;height:10px"/>
+      </div>
+    </body></html>
+  )HTML");
+  ASSERT_NE(doc, nullptr);
+  auto* host = doc->layers.front()->children.front()->children.front();
+  ASSERT_EQ(host->children.size(), 3u);
+  EXPECT_EQ(host->children[1]->id, "middle");
+  ASSERT_EQ(host->children[0]->children.size(), 1u);
+  ASSERT_EQ(host->children[2]->children.size(), 1u);
+}
+
+PAG_TEST(PAGXHTMLImporterTest, AbsoluteOriginSubstitutionPreservesIntrinsicMeasurement) {
+  auto doc = ParseRaw(R"HTML(
+    <html><body style="width:300px;height:200px">
+      <div style="padding:3px 5px;border:2px solid black">
+        <div id="content" style="position:absolute;left:4px;top:6px;width:10px;height:8px"/>
+      </div>
+    </body></html>
+  )HTML");
+  ASSERT_NE(doc, nullptr);
+  doc->applyLayout();
+  auto* outer = doc->layers.front()->children.front();
+  // Absolute children do not contribute to the parent's intrinsic content dimensions.
+  EXPECT_FLOAT_EQ(outer->layoutBounds().width, 10);
+  EXPECT_FLOAT_EQ(outer->layoutBounds().height, 6);
+  auto* host = outer->children.front();
+  ASSERT_EQ(host->children.size(), 1u);
+  auto* content = host->children.front();
+  EXPECT_EQ(content->id, "content");
+  EXPECT_FLOAT_EQ(content->layoutBounds().x, 6);
+  EXPECT_FLOAT_EQ(content->layoutBounds().y, 8);
+}
+
+PAG_TEST(PAGXHTMLImporterTest, AbsoluteReferenceFramesPreserveTransformedAncestry) {
+  auto doc = ParseRaw(R"HTML(
+    <html><body style="width:300px;height:200px">
+      <div style="transform:scale(0.833333);width:200px;height:100px">
+        <div style="width:100px;height:80px;border:1px solid black">
+          <div id="content" style="position:absolute;left:21px;top:20px;width:10px;height:8px"/>
+        </div>
+      </div>
+    </body></html>
+  )HTML");
+  ASSERT_NE(doc, nullptr);
+  auto* host = doc->layers.front()->children.front()->children.front();
+  ASSERT_EQ(host->children.size(), 1u);
+  auto* frame = host->children.front();
+  ASSERT_EQ(frame->children.size(), 1u);
+  EXPECT_EQ(frame->children.front()->id, "content");
+  EXPECT_FLOAT_EQ(frame->left, 1);
+  EXPECT_FLOAT_EQ(frame->children.front()->left, 21);
 }
 
 PAG_TEST(PAGXHTMLImporterTest, BoundedPreWrapTextCreatesWrappingTextBox) {

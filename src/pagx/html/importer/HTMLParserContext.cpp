@@ -399,6 +399,9 @@ std::shared_ptr<PAGXDocument> HTMLParserContext::parseDOM(const std::shared_ptr<
     _document->layers.push_back(bodyLayer);
   }
   finishImageLayouts();
+  std::unordered_set<Layer*> animatedLayers;
+  for (const auto& entry : _pendingAnimations) animatedLayers.insert(entry.second);
+  _layerBuilder->normalizeCSSChildFrames(animatedLayers);
   // Plan a provisional nonnegative origin before generating keyframes or fill-mode baselines. SVG
   // shapes and ordinary elements can belong to the same timing group. Discarded candidates may
   // affect this origin; finalizeTiming corrects it after the playable objects have been emitted.
