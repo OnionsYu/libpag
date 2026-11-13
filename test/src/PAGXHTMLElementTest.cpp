@@ -142,6 +142,45 @@ PAG_TEST(PAGXHTMLElementTest, SnapshotPrimitivesDoNotCrossAuthoredPaintSlots) {
   EXPECT_FALSE(host->children.back()->contents.empty());
 }
 
+PAG_TEST(PAGXHTMLElementTest, SnapshotSingleFlexPrimitivePreservesResizeAndAlignment) {
+  for (const auto& direction : {"row", "column"}) {
+    for (const auto& arrangement :
+         {"flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"}) {
+      for (const auto& alignment : {"flex-start", "center", "flex-end"}) {
+        SCOPED_TRACE(std::string(direction) + "/" + arrangement + "/" + alignment);
+        const std::string prefix =
+            "<div id=\"box\" style=\"display:flex;width:100px;height:60px;"
+            "flex-direction:" +
+            std::string(direction) + ";justify-content:" + arrangement +
+            ";align-items:" + alignment + "\"><span ";
+        const std::string suffix = "style=\"font-size:16px;line-height:21.3px\">Hello</span></div>";
+        auto reference = ParseElements(prefix + suffix);
+        auto document = ParseElements(prefix + "data-pagx-node-role=\"text\" " + suffix);
+        ASSERT_NE(reference, nullptr);
+        ASSERT_NE(document, nullptr);
+        auto* host = NamedLayer(document);
+        auto* original = NamedLayer(reference);
+        ASSERT_TRUE(host->children.empty());
+        ASSERT_EQ(host->contents.size(), 1u);
+        ASSERT_EQ(host->contents.front()->nodeType(), pagx::NodeType::Group);
+        auto* group = static_cast<pagx::Group*>(host->contents.front());
+        auto* text = original->children.front();
+        // Exercise fractional, undersized and expanded hosts; no measured positions are baked.
+        for (float size : {0.0f, 13.5f, 157.5f, 240.0f}) {
+          original->width = host->width = size;
+          original->height = host->height = size * .75f;
+          reference->applyLayout();
+          document->applyLayout();
+          EXPECT_FLOAT_EQ(group->layoutBounds().x, text->layoutBounds().x);
+          EXPECT_FLOAT_EQ(group->layoutBounds().y, text->layoutBounds().y);
+          EXPECT_FLOAT_EQ(group->layoutBounds().width, text->layoutBounds().width);
+          EXPECT_FLOAT_EQ(group->layoutBounds().height, text->layoutBounds().height);
+        }
+      }
+    }
+  }
+}
+
 PAG_TEST(PAGXHTMLElementTest, SnapshotPrimitiveRetainsIndependentSemantics) {
   for (const auto& properties :
        {"id=\"target\"", "name=\"named\"", "data-user=\"value\"", "style=\"opacity:0.5\"",

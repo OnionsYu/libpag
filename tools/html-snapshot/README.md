@@ -151,6 +151,9 @@ interleaved paint slots, compositing effects and independent box-shadow scopes s
 Generated text and geometric primitives become `Group` contents when they have no independent
 identity, effect or flex responsibility. Their constraints and painter scopes remain intact;
 content is never moved across an existing child layer's paint slot.
+A sole generated flex item can also use equivalent start/end/center constraints when the host
+has no padding and the item needs neither flex allocation nor cross-axis stretching. This keeps
+its alignment responsive to later resizing; other flex items retain their layout layers.
 
 The native importer substitutes start-anchored absolute origins while preserving both layout
 rounding steps. Percentage sizes and end/center anchors keep a shared reference frame for each

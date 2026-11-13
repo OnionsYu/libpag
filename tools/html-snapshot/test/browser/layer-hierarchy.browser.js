@@ -102,4 +102,12 @@ describe('snapshot ownership preserves native paint while reducing layers', {
       <div style="position:absolute;left:25px;top:65px;width:180px;height:35px">Second line</div>
       </div>`, [{ time: 0 }, { time: .5 }, { time: 1 }, { time: 1.75 }]);
   });
+
+  it('keeps a sole flex text item centered at fractional sizes', async () => {
+    await compare(`<div id="owner" name="owner" style="display:flex;width:287.5px;height:187.5px;
+      align-items:center;justify-content:space-evenly;background:#eee">
+      <div id="authored" name="authored" style="display:flex;flex-direction:column;
+        align-items:center;justify-content:center;width:137.5px;height:71.5px;background:#cef">
+        Centered text</div></div>`, [{ scale: 1 }, { scale: 1.5 }, { scale: 2 }]);
+  });
 });

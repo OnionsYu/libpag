@@ -150,6 +150,49 @@ bool ClipsBackgroundToText(const HTMLBoxAttributes& box) {
   return box.backgroundImage.empty() && box.backgroundColorSet && box.backgroundColor.alpha > 0.0f;
 }
 
+bool CanLowerSingleFlexPrimitive(const Layer* host, const Layer* child) {
+  // Constraint layout clamps a padded reference box at zero; flex layout uses its signed
+  // available size. Without padding the two models agree even after the host is resized.
+  if (!host->padding.isZero()) return false;
+  if (std::count_if(host->children.begin(), host->children.end(),
+                    [](const Layer* node) { return node->includeInLayout; }) != 1) {
+    return false;
+  }
+  const bool horizontal = host->layout == LayoutMode::Horizontal;
+  const bool explicitMain =
+      horizontal ? (std::isfinite(child->width) || std::isfinite(child->percentWidth))
+                 : (std::isfinite(child->height) || std::isfinite(child->percentHeight));
+  const bool explicitCross =
+      horizontal ? (std::isfinite(child->height) || std::isfinite(child->percentHeight))
+                 : (std::isfinite(child->width) || std::isfinite(child->percentWidth));
+  // Flex allocation rounds, while opposite-edge constraints ceil. Cross-axis stretch keeps
+  // fractional sizes. Neither allocation can be replaced by a Group's edge constraints.
+  return (child->flex == 0 || explicitMain) &&
+         (host->alignment != Alignment::Stretch || explicitCross);
+}
+
+void ApplySingleFlexSlot(Group* group, const Layer* host) {
+  auto main = host->arrangement;
+  const bool mainCenter = main == Arrangement::Center || main == Arrangement::SpaceAround ||
+                          main == Arrangement::SpaceEvenly;
+  const bool mainEnd = main == Arrangement::End;
+  const bool crossCenter = host->alignment == Alignment::Center;
+  const bool crossEnd = host->alignment == Alignment::End;
+  const bool horizontal = host->layout == LayoutMode::Horizontal;
+  group->left = group->right = group->top = group->bottom = NAN;
+  group->centerX = group->centerY = NAN;
+  if (horizontal ? mainCenter : crossCenter) group->centerX = 0;
+  else if (horizontal ? mainEnd : crossEnd)
+    group->right = 0;
+  else
+    group->left = 0;
+  if (horizontal ? crossCenter : mainCenter) group->centerY = 0;
+  else if (horizontal ? crossEnd : mainEnd)
+    group->bottom = 0;
+  else
+    group->top = 0;
+}
+
 }  // namespace
 
 BlendMode HTMLLayerBuilder::resolveBackgroundBlendMode(const std::string& value) {
@@ -324,9 +367,10 @@ void HTMLLayerBuilder::normalizeSnapshotPrimitives(
     // also keep formerly out-of-flow primitives from contributing to intrinsic measurement.
     size_t count = 0;
     for (auto* child : host->children) {
+      const bool flexSlot = host->layout != LayoutMode::None && child->includeInLayout;
       if (!width || !height || _snapshotPrimitives.count(child) == 0 ||
           animatedLayers.count(child) != 0 ||
-          (host->layout != LayoutMode::None && child->includeInLayout) || !child->id.empty() ||
+          (flexSlot && !CanLowerSingleFlexPrimitive(host, child)) || !child->id.empty() ||
           !child->name.empty() || !child->children.empty() || child->contents.empty() ||
           !child->visible || child->alpha != 1 || child->blendMode != BlendMode::Normal ||
           !child->groupOpacity || !child->passThroughBackground || !child->antiAlias ||
@@ -360,6 +404,7 @@ void HTMLLayerBuilder::normalizeSnapshotPrimitives(
       group->centerX = child->centerX;
       group->centerY = child->centerY;
       group->padding = child->padding;
+      if (flexSlot) ApplySingleFlexSlot(group, host);
       group->elements = std::move(child->contents);
       host->contents.push_back(group);
       ++count;
