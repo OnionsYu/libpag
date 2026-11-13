@@ -136,6 +136,15 @@ The emitted `data-pagx-paint-order="fixed"` attribute prevents the importer's fl
 from rearranging planned fragments. Ordinary flex subtrees stay as flex where their children
 can be emitted together. `isolation: isolate` preserves context boundaries for blending.
 
+Snapshots also retain a source model (`scene.version = 1` on the browser capture result).
+It records DOM ownership separately from layout parents, absolute/fixed containing blocks,
+clip ancestry, border/padding insets and measured geometry. Generated preview nodes carry
+`data-pagx-node-role`, `data-pagx-node-source` and, for source elements,
+`data-pagx-node-parent`. These are an internal importer contract, not author custom data.
+An `element` is the primary source box; `fragment` and `decoration` are paint-order pieces;
+`text`, `image`, `vector` and `geometry` are generated content; `clip` and `coordinate`
+describe necessary coordinate/clip scopes. A preview tag alone does not imply a PAGX Layer.
+
 The output still has to pass through `pagx import --format html` to be turned
 into PAGX. The importer's normaliser handles any final cleanup (unit
 conversion, dropping properties we missed, etc.).

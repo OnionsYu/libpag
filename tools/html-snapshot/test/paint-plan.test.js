@@ -5,6 +5,7 @@ const {
   paintStyleRecord, planPaintContext, beginPaintCapture, capturePaintGeometry,
   markPaintSource, markPaintDecoration, markPaintSurface, paintNeedsSeparateChildren,
   compilePaintMarkup, endPaintCapture,
+  captureSnapshotScene,
 } = require('../dist/lib/paint-plan');
 const { computedStyle, setRect } = require('./dom-helpers');
 
@@ -118,6 +119,37 @@ function compile(html = Array.from(document.body.childNodes, markup).join('')) {
 function leaves(output) { return Array.from(output.querySelectorAll('[data-leaf]'), el => el.dataset.leaf); }
 
 describe('paint capture and markup', () => {
+  test('records DOM ownership independently of layout and containing-block ancestry', () => {
+    start('<div id="block" style="position:relative;border:3px solid black;padding:7px">' +
+      '<div id="contents" style="display:contents"><span id="absolute" style="position:absolute">x</span></div></div>');
+    const scene = captureSnapshotScene();
+    const block = scene.sources.find(source => source.elementId === 'block');
+    const contents = scene.sources.find(source => source.elementId === 'contents');
+    const absolute = scene.sources.find(source => source.elementId === 'absolute');
+    expect(scene.version).toBe(1);
+    expect(absolute.parentId).toBe(contents.id);
+    expect(absolute.layoutParentId).toBe(block.id);
+    expect(absolute.absoluteContainingBlockId).toBe(block.id);
+    expect(block.border).toEqual([3, 3, 3, 3]);
+    expect(block.padding).toEqual([7, 7, 7, 7]);
+  });
+
+  test('distinguishes generated text from authored spans and keeps one primary identity', () => {
+    start('<div id="host" style="background:red"><span id="authored">A</span></div>');
+    const host = document.querySelector('#host');
+    const authored = document.querySelector('#authored');
+    const html = markPaintSource(host, '<div style="background:red">' +
+      '<span style="position:absolute;left:2px;top:3px">generated</span>' +
+      markPaintSource(authored, '<span id="authored">A</span>') + '</div>');
+    const output = document.createElement('div');
+    output.innerHTML = compilePaintMarkup(html);
+    const generated = Array.from(output.querySelectorAll('span')).find(el => el.textContent === 'generated');
+    expect(generated.getAttribute('data-pagx-node-role')).toBe('text');
+    expect(generated.getAttribute('data-pagx-node-source')).toBe('1');
+    expect(output.querySelector('#authored').getAttribute('data-pagx-node-role')).toBe('element');
+    expect(output.querySelectorAll('[data-pagx-node-source="1"][data-pagx-node-role="element"]')).toHaveLength(1);
+  });
+
   test('markers are inert outside capture and are removed from compiled XML-compatible output', () => {
     const el = document.createElement('div');
     expect(markPaintSource(el, '<div/>')).toBe('<div/>');

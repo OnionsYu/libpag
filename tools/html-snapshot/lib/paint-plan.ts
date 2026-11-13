@@ -3,6 +3,9 @@
 // browser-snapshot embeds their source without a module loader.
 // @ts-nocheck
 
+import * as snapshotScene from './snapshot-scene';
+const { snapshotInsets, snapshotNodeRole, markSnapshotNode, markSnapshotPrimitives } = snapshotScene;
+
 const PAINT_SOURCE_ATTR = 'data-pagx-paint-source';
 const PAINT_ORDER_ATTR = 'data-pagx-paint-order';
 const PAINT_DECORATION_ATTR = 'data-pagx-paint-decoration';
@@ -104,7 +107,9 @@ function collectPaintSources(el, parent, absBlock, fixedBlock, inheritedClips) {
   }
   const source = {
     id: PAINT_CAPTURE.nodes.length, el, style, parent, geometry: null, parentRect: null,
-    clips: inheritedClips.slice(), escapes: false,
+    clips: inheritedClips.slice(), escapes: false, absBlock, fixedBlock,
+    border: snapshotInsets(computed, 'border', '-width'),
+    padding: snapshotInsets(computed, 'padding'),
   };
   if (style.position === 'absolute' || style.position === 'fixed') {
     const block = style.position === 'fixed' ? fixedBlock : absBlock;
@@ -216,6 +221,15 @@ function buildPaintBoxes(el, parent, sequence) {
     box.atomic = true;
     return box;
   }
+  let owner = source;
+  for (let ancestor = parent; !owner && ancestor; ancestor = ancestor.parent) owner = ancestor.source;
+  if (source) {
+    const domParent = PAINT_CAPTURE.byElement.get(source.el.parentElement);
+    markSnapshotNode(el, 'element', source.id, domParent ? domParent.id : null);
+  } else {
+    markSnapshotNode(el, snapshotNodeRole(el), owner ? owner.id : null);
+  }
+  if (el.localName !== 'svg') markSnapshotPrimitives(el, owner ? owner.id : null);
   el.removeAttribute(PAINT_SOURCE_ATTR);
   box.decoration = el.hasAttribute(PAINT_DECORATION_ATTR);
   el.removeAttribute(PAINT_DECORATION_ATTR);
@@ -358,6 +372,7 @@ function clonePaintBox(box, deep, neutral, identities, ownIdentity = true) {
   if (!ownIdentity || identities.has(box.el)) {
     clone.removeAttribute('id');
     clone.removeAttribute('name');
+    if (box.source) clone.setAttribute('data-pagx-node-role', neutral ? 'fragment' : 'decoration');
   } else {
     identities.add(box.el);
   }
@@ -454,6 +469,7 @@ function insetPaintClip(el) {
 
 function makePaintClip(clipBox, root, identities) {
   const clip = clonePaintBox(clipBox, false, true, identities, false);
+  clip.setAttribute('data-pagx-node-role', 'clip');
   clearPaintEffects(clip);
   const rect = clipBox.source.geometry;
   const origin = root.source.geometry || { left: 0, top: 0 };
@@ -472,6 +488,7 @@ function makePaintClip(clipBox, root, identities) {
     width: root.el.style.width || '100%', height: root.el.style.height || '100%',
   });
   reset.setAttribute(PAINT_ORDER_ATTR, 'fixed');
+  markSnapshotNode(reset, 'coordinate', clipBox.source.id);
   clip.appendChild(reset);
   insetPaintClip(clip);
   return { outer: clip, inner: reset };
@@ -571,6 +588,26 @@ function endPaintCapture() {
   return warnings;
 }
 
+function captureSnapshotScene() {
+  return {
+    version: 1,
+    sources: PAINT_CAPTURE.nodes.map(source => {
+      const parent = PAINT_CAPTURE.byElement.get(source.el.parentElement);
+      return {
+        id: source.id, parentId: parent ? parent.id : null,
+        layoutParentId: source.parent ? source.parent.id : null,
+        absoluteContainingBlockId: source.absBlock ? source.absBlock.id : null,
+        fixedContainingBlockId: source.fixedBlock ? source.fixedBlock.id : null,
+        tag: source.el.localName, elementId: source.el.id,
+        pseudo: source.el.getAttribute('data-snapshot-pseudo'),
+        border: source.border, padding: source.padding,
+        clipIds: source.clips.map(clip => clip.id), stackingContext: source.style.context,
+        geometry: source.geometry,
+      };
+    }),
+  };
+}
+
 const PAINT_PLAN_HELPERS_SRC = [
   paintProperty, paintStyleRecord, beginPaintCapture, collectPaintSources, paintWarning,
   paintSource, paintNeedsSeparateChildren, capturePaintGeometry, markPaintSource,
@@ -578,8 +615,8 @@ const PAINT_PLAN_HELPERS_SRC = [
   paintHasDecoration, buildPaintBoxes, assignPaintOrder, planPaintContext, planPaintFlow, collectPaintFlow,
   neutralPaintStyle, positionPaintClone, clonePaintBox, paintItemSource, paintItemClips, paintPath,
   clearPaintEffects, paintBorder, insetPaintClip, makePaintClip, emitPaintItems, compilePaintMarkup,
-  endPaintCapture,
-].map(fn => fn.toString()).join('\n\n');
+  endPaintCapture, captureSnapshotScene,
+].map(fn => fn.toString()).join('\n\n') + '\n' + snapshotScene.SNAPSHOT_SCENE_HELPERS_SRC;
 
 const PAINT_PLAN_CONSTANTS_SRC = `
 const PAINT_SOURCE_ATTR = '${PAINT_SOURCE_ATTR}';
@@ -594,5 +631,5 @@ const PAINT_CAPTURE = {
 export {
   PAINT_PLAN_HELPERS_SRC, PAINT_PLAN_CONSTANTS_SRC, paintStyleRecord, planPaintContext,
   beginPaintCapture, capturePaintGeometry, markPaintSource, markPaintDecoration, markPaintSurface,
-  paintNeedsSeparateChildren, compilePaintMarkup, endPaintCapture,
+  paintNeedsSeparateChildren, compilePaintMarkup, endPaintCapture, captureSnapshotScene,
 };

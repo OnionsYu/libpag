@@ -85,6 +85,17 @@ pagx::Layer* NamedLayer(const std::shared_ptr<pagx::PAGXDocument>& document,
 
 }  // namespace
 
+PAG_TEST(PAGXHTMLElementTest, SnapshotOwnershipIsNotUserCustomData) {
+  auto document = ParseElements(
+      "<div id=\"box\" data-pagx-node-role=\"element\" data-pagx-node-source=\"12\" "
+      "data-pagx-node-parent=\"3\" data-label=\"authored\" style=\"width:20px;height:10px\"/>");
+  ASSERT_NE(document, nullptr);
+  auto* layer = NamedLayer(document);
+  ASSERT_NE(layer, nullptr);
+  ASSERT_EQ(layer->customData.size(), 1u);
+  EXPECT_EQ(layer->customData.at("label"), "authored");
+}
+
 PAG_TEST(PAGXHTMLElementTest, PercentageRasterBackgroundUsesFittedScaleModes) {
   struct Case {
     const char* size;

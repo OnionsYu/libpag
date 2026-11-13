@@ -5291,6 +5291,7 @@ function snapshotMain(opts) {
   window.__pagxInitialRunsUsed = new WeakSet();
   try {
     const result = snapshotMainImpl(opts);
+    result.scene = captureSnapshotScene();
     for (const entry of window.__pagxInitialHosts || []) {
       if (paintSource(entry.node) &&
           entry.runs.some((run) => !window.__pagxInitialRunsUsed.has(run))) {

@@ -26,6 +26,7 @@
 #include "pagx/html/importer/HTMLDetail.h"
 #include "pagx/html/importer/HTMLDiagnosticSink.h"
 #include "pagx/html/importer/HTMLIdAllocator.h"
+#include "pagx/html/importer/HTMLSnapshotAttributes.h"
 #include "pagx/html/importer/HTMLSvgFilterDecoder.h"
 #include "pagx/html/importer/HTMLValueParser.h"
 #include "pagx/nodes/BackgroundBlurStyle.h"
@@ -1200,6 +1201,7 @@ void HTMLLayerBuilder::forwardDataAttributes(Layer* layer,
   if (layer == nullptr || element == nullptr) return;
   for (const auto& attr : element->attributes) {
     if (attr.name.compare(0, 5, "data-") != 0) continue;
+    if (IsSnapshotAttribute(attr.name)) continue;
     // Internal html-snapshot/importer handshake; it controls layout semantics and is not user
     // custom data. Keep all other data-* attributes forwarding exactly as before.
     if (attr.name == "data-pagx-intrinsic-width" || attr.name == "data-pagx-image-width" ||
